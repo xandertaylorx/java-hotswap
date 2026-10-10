@@ -6,17 +6,20 @@ gradle.projectsEvaluated {
         doLast {
             def models = root.allprojects.findAll { it.extensions.findByName('sourceSets') != null }.collect { p ->
                 def main = p.sourceSets.findByName('main')
+                if (main == null) return null
                 def app = p.extensions.findByName('application')
-                def compiler = p.tasks.findByName(main.compileJavaTaskName)
+                // Realize the application launch task so task-level JVM arguments
+                // (including withType(JavaExec) configuration) are preserved too.
+                def run = app == null ? null : p.tasks.named('run').get()
                 def launcher = p.extensions.findByName('java').toolchain
-                def javaExecutable = p.javaToolchains.launcherFor(launcher).get().executablePath.asFile.absolutePath
+                def javaExecutable = (run == null ? p.javaToolchains.launcherFor(launcher).get() : run.javaLauncher.get()).executablePath.asFile.absolutePath
                 [name: p.path, sources: main.java.srcDirs.collect { it.absolutePath },
                  classes: main.output.classesDirs.files.collect { it.absolutePath },
                  classpath: main.runtimeClasspath.files.collect { it.absolutePath },
                  compileTasks: [p.tasks.getByName(main.classesTaskName).path],
                  mainClass: app == null ? null : app.mainClass.orNull,
-                 jvmArgs: app == null ? [] : app.applicationDefaultJvmArgs.toList(), java: javaExecutable]
-            }
+                 jvmArgs: run == null ? [] : (app.applicationDefaultJvmArgs.toList() + run.jvmArgs.toList()).unique(), java: javaExecutable]
+            }.findAll { it != null }
             // Gradle resolves project dependencies as JARs by default. Launch from the
             // corresponding output directories so dependency classes can be redefined.
             def outputs = [:]

@@ -1,0 +1,8 @@
+[
+  {
+    "label": "Nested Gradle HotSwap",
+    "adapter": "Java HotSwap",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  }
+]

@@ -73,6 +73,14 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         "DISCOVERING project (build scripts execute as with a normal build)",
     );
     let project = Project::discover(config, state, emit, stop)?;
+    status(
+        emit,
+        &format!(
+            "BUILD TOOL {} (cwd={})",
+            project.tool.display(),
+            project.root.display()
+        ),
+    );
     let (main, module) = project.entry(config)?;
     status(emit, &format!("BUILDING {} / {main}", project.kind));
     let sources = project

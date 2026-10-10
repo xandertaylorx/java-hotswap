@@ -17,6 +17,8 @@ use std::{
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
     pub cwd: PathBuf,
+    /// Build root, relative to the workspace (required for multiple independent builds).
+    pub project_root: Option<PathBuf>,
     pub main_class: Option<String>,
     pub module: Option<String>,
     pub java_home: Option<PathBuf>,
@@ -31,6 +33,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             cwd: PathBuf::from("."),
+            project_root: None,
             main_class: None,
             module: None,
             java_home: None,
@@ -73,6 +76,9 @@ enum Action {
     Run {
         #[arg(long, default_value = ".")]
         project: PathBuf,
+        /// Select a build inside the workspace when multiple builds exist.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
         #[arg(long)]
         main: Option<String>,
     },
@@ -87,6 +93,8 @@ enum Action {
     Inspect {
         #[arg(long, default_value = ".")]
         project: PathBuf,
+        #[arg(long)]
+        project_root: Option<PathBuf>,
     },
     /// Stdio launch adapter used by the Zed extension.
     Dap,
@@ -116,8 +124,15 @@ fn main_result() -> Result<(), String> {
         }
         Action::Stop { project } => control(project, "stop"),
         Action::Clear { project } => control(project, "clear"),
-        Action::Run { project, main } => {
+        Action::Run {
+            project,
+            project_root,
+            main,
+        } => {
             let mut config = Config::load(project)?;
+            if project_root.is_some() {
+                config.project_root = project_root;
+            }
             if main.is_some() {
                 config.main_class = main;
             }
@@ -127,8 +142,14 @@ fn main_result() -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             session::run(config, stop, emit)
         }
-        Action::Inspect { project } => {
-            let config = Config::load(project)?;
+        Action::Inspect {
+            project,
+            project_root,
+        } => {
+            let mut config = Config::load(project)?;
+            if project_root.is_some() {
+                config.project_root = project_root;
+            }
             let state = config.cwd.join(".java-hotswap");
             fs::create_dir_all(&state).map_err(|e| e.to_string())?;
             let _lock = session::lock(&state)?;

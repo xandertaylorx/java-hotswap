@@ -132,6 +132,7 @@ Each console example prints an explosion radius and its JVM PID, making reloads 
 | [Gradle multi-module](examples/gradle-multi) | Reloading a class in a dependency module. |
 | [Maven multi-module](examples/maven-multi) | Reactor dependencies launched from class directories. |
 | [LWJGL](examples/lwjgl) | A GLFW window whose title changes after a method reload. |
+| [Nested Gradle](examples/nested-gradle) | Open the parent folder; the `java/` build uses its wrapper, LWJGL, Gson, and `build.nosync`. |
 
 For a first try, open `examples/plain` in Zed and run **Java HotSwap: Run**. Change `return 0;` to `return 10;`, then save.
 
@@ -139,10 +140,32 @@ For a first try, open `examples/plain` in Zed and run **Java HotSwap: Run**. Cha
 
 A single conventional `public static void main(String[] args)` is detected automatically. Gradle's `application.mainClass` takes precedence within its module. Multiple candidates produce a selection error with the discovered entry points.
 
+### Workspaces with nested Java builds
+
+Open your workspace normally. Discovery searches subdirectories for Gradle (Groovy/Kotlin) and Maven builds. A single build is selected automatically, so `minecraftclone/java/build.gradle` works with Zed opened at `minecraftclone`. The selected root and build executable appear in the output. Gradle's wrapper compiles the sources; Gradle supplies the resolved runtime classpath, actual output directories (including custom `build.nosync`), application main class, and JVM arguments. Build failures are reported without falling back to bare `javac`.
+
+If the workspace contains several independent builds, discovery lists them and requires a selection before executing a build. Set `projectRoot` in each Zed launch scenario:
+
+```json
+[
+  {
+    "label": "Game HotSwap",
+    "adapter": "Java HotSwap",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "projectRoot": "java"
+  }
+]
+```
+
+The CLI equivalent is `java-hotswap run --project /path/to/workspace --project-root java`. You can also set `projectRoot` in the workspace's `.java-hotswap.json`. Gradle subprojects and Maven reactor modules belong to their enclosing build; use `module` to select an application within that build. To run separate sessions concurrently, set each scenario's `cwd` to its own build root so session locks and Stop/Clear controls are independent.
+
+Discovery skips symlinks and generated/cache directories such as `.git`, `.gradle`, `.java-hotswap`, `build`, `build.nosync`, `target`, and `node_modules`. Use an explicit `projectRoot` for a build in an excluded directory. Plain Java compilation is used only when no build is found; an invalid explicit build selection produces an error.
+
 <details>
 <summary><strong>Choose an entry point or customize JVM arguments</strong></summary>
 
-Create `.java-hotswap.json` in the project root only when needed:
+Create `.java-hotswap.json` in the workspace (`cwd`) only when needed:
 
 ```json
 {
@@ -156,9 +179,10 @@ Create `.java-hotswap.json` in the project root only when needed:
 
 | Option | Use |
 |---|---|
+| `projectRoot` | Gradle/Maven build root, absolute or relative to the workspace. Required when several independent builds are discovered. |
 | `mainClass` | Fully qualified entry point. |
 | `module` | Gradle project path or absolute Maven module directory; Inspect shows the exact value. |
-| `javaHome` | Select a JDK; relative paths resolve from the project. Otherwise uses Gradle's launcher or `JAVA_HOME`/PATH. |
+| `javaHome` | Select a JDK; relative paths resolve from the workspace. Otherwise uses Gradle's application launcher or `JAVA_HOME`/PATH. |
 | `jvmArgs` | Additional JVM arguments, such as `-XstartOnFirstThread` for a macOS application that needs it. |
 | `args` | Application arguments. |
 | `buildArgs` | Build-tool options, such as Maven profiles. |
@@ -166,7 +190,7 @@ Create `.java-hotswap.json` in the project root only when needed:
 | `debounceMs` | Save debounce interval; defaults to 250 ms. |
 | `jdwpPort` | Optional loopback debugger port for Java attach. |
 
-For multi-module overrides, set both `module` and `mainClass`. Gradle application default JVM arguments are inherited; the LWJGL example already declares the macOS first-thread argument.
+For multi-module overrides, set both `module` and `mainClass`. Gradle application default JVM arguments and additional `run.jvmArgs` are inherited (duplicate identical arguments are removed); the LWJGL example already declares the macOS first-thread argument.
 
 Unknown fields fail explicitly. Stop and start the session after changing build configuration so the project is rediscovered.
 

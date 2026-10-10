@@ -1,0 +1,17 @@
+plugins { id 'application' }
+repositories { mavenCentral() }
+layout.buildDirectory = layout.projectDirectory.dir('build.nosync')
+dependencies {
+    implementation 'com.google.code.gson:gson:2.13.2'
+    implementation 'org.lwjgl:lwjgl:3.3.6'
+    def os = System.getProperty('os.name').toLowerCase()
+    def arch = System.getProperty('os.arch').toLowerCase()
+    def natives = os.contains('mac') ? (arch.contains('aarch64') || arch.contains('arm64') ? 'natives-macos-arm64' : 'natives-macos') : os.contains('win') ? 'natives-windows' : 'natives-linux'
+    runtimeOnly "org.lwjgl:lwjgl:3.3.6:${natives}"
+}
+application {
+    mainClass = 'blockland.Main'
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED', '-Dhotswap.fixture=true']
+    if (System.getProperty('os.name').toLowerCase().contains('mac')) applicationDefaultJvmArgs += ['-XstartOnFirstThread']
+}
+tasks.named('run') { jvmArgs '-Dhotswap.run=true' }

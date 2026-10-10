@@ -4,6 +4,21 @@ Local verification on 2026-10-10, macOS Apple Silicon. These are executed result
 
 Toolchains: Rust 1.97.1; zed_extension_api 0.7.0; Temurin Java 17.0.20.1, 21.0.10, 25.0.2; Gradle 9.1.0; Maven 3.9.11. The embedded agent's classfile major version is 61 (Java 17).
 
+## Nested-build detection fix
+
+Verified with the rebuilt native arm64 release companion on Java 25 / Gradle 9.1:
+
+- Full suite: 16 passed, one graphical test skipped (17 total). The GLFW graphical lifecycle/reload test passed separately.
+- Five Rust tests passed, including four workspace-discovery regressions; rustfmt, clippy with warnings denied, and the WASM extension release build passed.
+- A parent workspace with a nested `java/` build used its real Gradle 9.1 wrapper even when the global Gradle override pointed to a nonexistent executable. LWJGL 3.3.6, its native library, and Gson 2.13.2 loaded successfully. Compiled classes were under `java/build.nosync/classes/java/main`; no plain-javac output was created.
+- Gradle's application main class won over a second source entry point. Native-access/default JVM arguments and additional run-task JVM arguments were verified at runtime. On macOS, `-XstartOnFirstThread` was verified in both metadata and the actual process command (the launcher consumes it before RuntimeMXBean records JVM arguments).
+- Nested Gradle CLI and DAP sessions reloaded method changes with unchanged JVM PID. Tests also covered nested Maven, multiple independent Gradle/Maven roots, explicit configuration and DAP `projectRoot` selection, an unselected broken build that must not execute, and a selected broken Gradle build that must not fall back to javac.
+- The installed `/Users/user/.cargo/bin/java-hotswap` was replaced with the rebuilt companion. Its `inspect --project examples/nested-gradle --project-root java` resolved the nested build, dependencies, custom outputs, application main, launcher and JVM flags correctly.
+
+Original build files remained unchanged throughout lifecycle tests. The Minecraft clone was not read or modified. Native Zed UI testing remains unverified; the launch protocol used by Zed was exercised against real nested Gradle applications.
+
+## Initial release verification
+
 | Check | Result |
 |---|---|
 | Core suite on Java 17 | 9 passed; graphical test skipped; separate snapshot-failure recovery test passed |

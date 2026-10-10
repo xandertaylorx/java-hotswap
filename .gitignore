@@ -3,6 +3,7 @@
 /.tools/
 **/.java-hotswap/
 **/build/
+**/build.nosync/
 **/target/
 **/.gradle/
 __pycache__/

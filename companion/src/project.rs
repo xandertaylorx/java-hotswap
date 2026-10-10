@@ -68,6 +68,95 @@ fn build_tool(root: &Path, name: &str) -> PathBuf {
         .unwrap_or_else(|| name.into())
     }
 }
+
+fn build_kind(root: &Path) -> Result<Option<&'static str>, String> {
+    let gradle = [
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "gradlew",
+        "gradlew.bat",
+    ]
+    .iter()
+    .any(|name| root.join(name).is_file());
+    let maven = ["pom.xml", "mvnw", "mvnw.cmd"]
+        .iter()
+        .any(|name| root.join(name).is_file());
+    match (gradle, maven) {
+        (true, true) => Err(format!(
+            "Both Gradle and Maven markers found in {}; choose an unambiguous build root",
+            root.display()
+        )),
+        (true, false) => Ok(Some("gradle")),
+        (false, true) => Ok(Some("maven")),
+        _ => Ok(None),
+    }
+}
+
+// A recognized build owns its module tree. Do not classify Gradle subprojects or
+// Maven reactor modules as independent builds, or scan their generated outputs.
+fn find_builds(root: &Path, builds: &mut Vec<(PathBuf, &'static str)>) -> Result<(), String> {
+    if let Some(kind) = build_kind(root)? {
+        builds.push((root.to_path_buf(), kind));
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)
+        .map_err(|e| format!("Cannot discover projects in {}: {e}", root.display()))?
+    {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            continue; // Includes symlinks; avoid cycles and leaving the workspace.
+        }
+        if matches!(
+            entry.file_name().to_str(),
+            Some(
+                ".git"
+                    | ".gradle"
+                    | ".java-hotswap"
+                    | "target"
+                    | "build"
+                    | "build.nosync"
+                    | "node_modules"
+                    | ".tools"
+                    | ".idea"
+                    | ".venv"
+            )
+        ) {
+            continue;
+        }
+        find_builds(&entry.path(), builds)?;
+    }
+    Ok(())
+}
+
+fn select_build(
+    workspace: &Path,
+    selected: Option<&Path>,
+) -> Result<(PathBuf, &'static str), String> {
+    if let Some(selected) = selected {
+        let root = fs::canonicalize(workspace.join(selected))
+            .map_err(|e| format!("Invalid projectRoot {}: {e}", selected.display()))?;
+        let kind = build_kind(&root)?.ok_or_else(|| {
+            format!(
+                "projectRoot {} has no Gradle or Maven build; refusing plain Java fallback",
+                root.display()
+            )
+        })?;
+        return Ok((root, kind));
+    }
+    let mut builds = Vec::new();
+    find_builds(workspace, &mut builds)?;
+    builds.sort_by(|a, b| a.0.cmp(&b.0));
+    match builds.len() {
+        0 => Ok((workspace.to_path_buf(), "plain")),
+        1 => Ok(builds.remove(0)),
+        _ => Err(format!(
+            "Multiple Java build projects found: {}. Set projectRoot in .java-hotswap.json or the Zed launch scenario (relative to cwd), or set cwd/--project to the desired build root. Refusing plain Java fallback.",
+            builds.iter().map(|(p, kind)| format!("{} ({kind})", p.strip_prefix(workspace).unwrap_or(p).display())).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
 impl Project {
     pub fn discover(
         config: &Config,
@@ -75,18 +164,15 @@ impl Project {
         emit: &Emit,
         stop: &AtomicBool,
     ) -> Result<Self, String> {
-        let root = fs::canonicalize(&config.cwd).map_err(|e| e.to_string())?;
-        let kind = if root.join("build.gradle").exists()
-            || root.join("build.gradle.kts").exists()
-            || root.join("settings.gradle").exists()
-            || root.join("settings.gradle.kts").exists()
-        {
-            "gradle"
-        } else if root.join("pom.xml").exists() {
-            "maven"
-        } else {
-            "plain"
-        };
+        let workspace = fs::canonicalize(&config.cwd).map_err(|e| e.to_string())?;
+        let (root, kind) = select_build(&workspace, config.project_root.as_deref())?;
+        emit(
+            "console",
+            &format!(
+                "[Java HotSwap] SELECTED {kind} project {}\n",
+                root.display()
+            ),
+        );
         let mut project = Self {
             root: root.clone(),
             kind: kind.into(),
@@ -423,4 +509,102 @@ pub fn snapshot(roots: &[PathBuf]) -> Result<BTreeMap<PathBuf, u64>, String> {
         result.insert(p, h.finish());
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Workspace(PathBuf);
+    impl Workspace {
+        fn new() -> Self {
+            static ID: AtomicUsize = AtomicUsize::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "hotswap-discovery-{}-{}",
+                std::process::id(),
+                ID.fetch_add(1, Ordering::SeqCst)
+            ));
+            fs::create_dir_all(&p).unwrap();
+            Self(fs::canonicalize(p).unwrap())
+        }
+        fn file(&self, name: &str) {
+            let p = self.0.join(name);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "").unwrap();
+        }
+    }
+    impl Drop for Workspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn recursive_kotlin_gradle_and_reactor_ownership() {
+        let w = Workspace::new();
+        w.file("deep/java/settings.gradle.kts");
+        w.file("deep/java/app/build.gradle.kts");
+        assert_eq!(
+            select_build(&w.0, None).unwrap(),
+            (w.0.join("deep/java"), "gradle")
+        );
+        let w = Workspace::new();
+        w.file("java/pom.xml");
+        w.file("java/module/pom.xml");
+        assert_eq!(
+            select_build(&w.0, None).unwrap(),
+            (w.0.join("java"), "maven")
+        );
+    }
+
+    #[test]
+    fn ambiguity_requires_explicit_valid_build_selection() {
+        let w = Workspace::new();
+        w.file("game/build.gradle");
+        w.file("tools/pom.xml");
+        let error = select_build(&w.0, None).unwrap_err();
+        assert!(error.contains("game (gradle), tools (maven)"));
+        assert_eq!(
+            select_build(&w.0, Some(Path::new("tools"))).unwrap(),
+            (w.0.join("tools"), "maven")
+        );
+        assert!(select_build(&w.0, Some(Path::new(".")))
+            .unwrap_err()
+            .contains("refusing plain Java fallback"));
+        assert!(select_build(&w.0, Some(Path::new("missing"))).is_err());
+    }
+
+    #[test]
+    fn plain_only_without_builds_and_generated_trees_are_ignored() {
+        let w = Workspace::new();
+        w.file("src/Main.java");
+        for ignored in [
+            ".git",
+            ".gradle",
+            ".java-hotswap",
+            "build",
+            "build.nosync",
+            "target",
+            "node_modules",
+        ] {
+            w.file(&format!("{ignored}/copy/build.gradle"));
+        }
+        assert_eq!(select_build(&w.0, None).unwrap(), (w.0.clone(), "plain"));
+        w.file("java/gradlew");
+        assert_eq!(
+            select_build(&w.0, None).unwrap(),
+            (w.0.join("java"), "gradle")
+        );
+    }
+
+    #[test]
+    fn conflicting_build_tools_fail_explicitly() {
+        let w = Workspace::new();
+        w.file("java/build.gradle");
+        w.file("java/pom.xml");
+        assert!(select_build(&w.0, None)
+            .unwrap_err()
+            .contains("Both Gradle and Maven"));
+    }
 }
