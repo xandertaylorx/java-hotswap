@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "cwd": {
+      "type": "string",
+      "description": "Project root; defaults to adapter working directory."
+    },
+    "mainClass": {
+      "type": "string",
+      "description": "Fully qualified entry point; required if detection is ambiguous."
+    },
+    "module": {
+      "type": "string",
+      "description": "Gradle project path (e.g. :app), or absolute Maven module directory."
+    },
+    "javaHome": {
+      "type": "string"
+    },
+    "jvmArgs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "classpath": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "buildArgs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "debounceMs": {
+      "type": "integer",
+      "minimum": 50,
+      "default": 250
+    },
+    "jdwpPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "request": {
+      "const": "launch"
+    },
+    "adapter": {
+      "const": "Java HotSwap"
+    },
+    "label": {
+      "type": "string"
+    },
+    "noDebug": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "request"
+  ],
+  "additionalProperties": false
+}

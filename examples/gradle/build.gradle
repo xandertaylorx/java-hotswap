@@ -1,0 +1,5 @@
+plugins { id 'application' }
+repositories { mavenCentral() }
+application { mainClass = 'demo.Main' }
+java { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+dependencies { implementation 'org.apache.commons:commons-lang3:3.18.0' }

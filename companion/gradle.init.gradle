@@ -1,0 +1,32 @@
+import groovy.json.JsonOutput
+// Temporary init script; the user's build files are never edited.
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    root.tasks.register('__javaHotSwapMetadata') {
+        doLast {
+            def models = root.allprojects.findAll { it.extensions.findByName('sourceSets') != null }.collect { p ->
+                def main = p.sourceSets.findByName('main')
+                def app = p.extensions.findByName('application')
+                def compiler = p.tasks.findByName(main.compileJavaTaskName)
+                def launcher = p.extensions.findByName('java').toolchain
+                def javaExecutable = p.javaToolchains.launcherFor(launcher).get().executablePath.asFile.absolutePath
+                [name: p.path, sources: main.java.srcDirs.collect { it.absolutePath },
+                 classes: main.output.classesDirs.files.collect { it.absolutePath },
+                 classpath: main.runtimeClasspath.files.collect { it.absolutePath },
+                 compileTasks: [p.tasks.getByName(main.classesTaskName).path],
+                 mainClass: app == null ? null : app.mainClass.orNull,
+                 jvmArgs: app == null ? [] : app.applicationDefaultJvmArgs.toList(), java: javaExecutable]
+            }
+            // Gradle resolves project dependencies as JARs by default. Launch from the
+            // corresponding output directories so dependency classes can be redefined.
+            def outputs = [:]
+            root.allprojects.each { p ->
+                def sourceSets = p.extensions.findByName('sourceSets')
+                def jar = p.tasks.findByName('jar')
+                if (sourceSets != null && jar != null) outputs[jar.archiveFile.get().asFile.absolutePath] = sourceSets.main.output.files.collect { it.absolutePath }
+            }
+            models.each { model -> model.classpath = model.classpath.collectMany { path -> outputs.containsKey(path) ? outputs[path] : [path] }.unique() }
+            new File(System.getProperty('javaHotSwap.metadata')).text = JsonOutput.toJson(models)
+        }
+    }
+}

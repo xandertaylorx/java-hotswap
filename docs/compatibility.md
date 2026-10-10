@@ -1,0 +1,18 @@
+# Scope and limitations
+
+| Area | Implemented behavior | Boundary |
+|---|---|---|
+| Gradle | Wrapper preferred; main SourceSet metadata; application main/JVM args; selected Java launcher; module dependency output mapping; `classes` tasks | Gradle Java plugins / JVM classpath applications. Composite builds, custom source sets, Android and arbitrary JavaExec launch configuration are not supported automatically. |
+| Maven | Wrapper preferred; effective POM recursion; profile-aware modules; resolved source/output dirs; runtime classpath and reactor JAR-to-classes mapping | One initial `package -DskipTests` for reactor artifact resolution. Subsequent saves run `compile`. Extra generated source roots/toolchain-plugin launchers, WAR/EAR launchers and classifier dependencies require further integration. |
+| Plain | `src/main/java`, `src`, or root; optional extra classpath; javac | Safe compilation compiles all sources; no javac dependency-aware incremental engine. Module-path applications and preview/compact main syntax are not automatically detected. |
+| Entry points | Gradle application config or conventional public static main | Multiple candidates require explicit mainClass/module. Detection is heuristic, not a full Java parser. |
+| Watching | Java content changes, creation, deletion; debounce; serialized jobs; catches edits during builds | Source polling reads contents every 100ms; large source trees may need a future native event watcher. Resources/build files are not watched. Restart session after dependency/build configuration changes. Symlink entries encountered during traversal are skipped. |
+| Redefinition | Method bodies, logic, literals where JVM allows; atomic batches; rejected changes reported | Field/method additions/deletions, inheritance/schema changes, static-final constant propagation, initialization and state migration are not guaranteed. Standard JVM HotSwap rules apply. |
+| Runtime outputs | Reload only successful-build immutable snapshots | Build tools may leave partial outputs on disk after failures; existing definitions are not redefined, but future first-time class loading follows normal JVM classpath behavior. Do not run another compiler against the same outputs during a session. Application stdin is not forwarded in this release. |
+| macOS | Native Rust executable; platform-neutral agent; Gradle default JVM args incl. first-thread flag | Local Apple Silicon verification; Intel release build/CI needs actual Intel run before claiming verified support. |
+| Linux | Unix process-group lifecycle | CI configured; local results here are macOS only. |
+| Windows | Portable paths/process creation and direct-child cleanup | Experimental, unverified. Descendant cleanup and batch-wrapper semantics need Windows Job Objects and Windows tests before production support. |
+| Zed | Compiled real WASM SDK adapter; global Run/Stop/Clear/Inspect tasks; DAP launch/output | No live Zed UI verification in this environment. No custom toolbar, status bar or save callbacks. |
+| Debugging | Optional loopback JDWP, existing Java adapter attach | HotSwap adapter is not a full debugger. Live Zed Java attach remains unverified. |
+
+Source deletion and structural changes never trigger an automatic restart. Very short-lived apps finish before saving/reloading is useful. Applications launched by frameworks, custom scripts, containers or remote VMs require explicit launch integration; “ANY Java project” cannot be honestly guaranteed by this first release.

@@ -1,0 +1,9 @@
+/target/
+/companion/target/
+/.tools/
+**/.java-hotswap/
+**/build/
+**/target/
+**/.gradle/
+__pycache__/
+*.log

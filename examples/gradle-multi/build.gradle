@@ -1,0 +1,9 @@
+subprojects {
+    apply plugin: 'java'
+    repositories { mavenCentral() }
+}
+project(':app') {
+    apply plugin: 'application'
+    application { mainClass = 'demo.Main' }
+    dependencies { implementation project(':core') }
+}

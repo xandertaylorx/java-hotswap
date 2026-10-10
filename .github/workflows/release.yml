@@ -1,0 +1,48 @@
+name: Build release candidates
+on:
+  workflow_dispatch:
+jobs:
+  companion:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: cargo build --locked --release --manifest-path companion/Cargo.toml --target ${{ matrix.target }}
+      - name: Package candidate
+        run: |
+          mkdir -p release
+          cp companion/target/${{ matrix.target }}/release/java-hotswap release/
+          cp LICENSE README.md release/
+          tar -czf java-hotswap-${{ matrix.target }}.tar.gz -C release .
+          shasum -a 256 java-hotswap-${{ matrix.target }}.tar.gz > java-hotswap-${{ matrix.target }}.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-hotswap-${{ matrix.target }}
+          path: java-hotswap-${{ matrix.target }}.tar.gz*
+  extension:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - run: cargo build --locked --release --target wasm32-wasip2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-hotswap-extension
+          path: target/wasm32-wasip2/release/java_hotswap_extension.wasm
