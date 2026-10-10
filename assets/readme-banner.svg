@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="340" viewBox="0 0 1280 340" role="img" aria-labelledby="title description">
+  <title id="title">Java HotSwap for Zed</title>
+  <desc id="description">Save, compile, and reload compatible Java code in the same running JVM.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#183b36" opacity=".09"/></pattern>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#244e45"/><stop offset="1" stop-color="#132f2a"/></linearGradient>
+  </defs>
+  <rect width="1280" height="340" rx="20" fill="#f5f2e9"/>
+  <rect width="1280" height="340" rx="20" fill="url(#grid)"/>
+  <path d="M900 0v340M932 0v340" stroke="#193c35" stroke-opacity=".08"/>
+  <text x="64" y="73" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" letter-spacing="3" fill="#3f6a5e">JAVA DEVELOPMENT · ZED</text>
+  <text x="60" y="157" font-family="Arial, Helvetica, sans-serif" font-size="74" font-weight="700" letter-spacing="-3" fill="#17352e">Java HotSwap</text>
+  <text x="64" y="204" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#52635b">Change the code. Keep the JVM running.</text>
+  <rect x="64" y="250" width="374" height="39" rx="19.5" fill="#e5eade"/>
+  <text x="87" y="275" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" letter-spacing="1.5" fill="#244e45">SAVE</text>
+  <path d="M143 270h24m-5-5 5 5-5 5" fill="none" stroke="#708574" stroke-width="1.5"/>
+  <text x="184" y="275" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" letter-spacing="1.5" fill="#244e45">COMPILE</text>
+  <path d="M275 270h24m-5-5 5 5-5 5" fill="none" stroke="#708574" stroke-width="1.5"/>
+  <text x="316" y="275" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" letter-spacing="1.5" fill="#244e45">RELOAD</text>
+  <rect x="968" y="78" width="188" height="188" rx="42" fill="url(#tile)"/>
+  <path d="M997 165a65 65 0 0 1 113-41" fill="none" stroke="#b5d6a6" stroke-width="6" stroke-linecap="round"/>
+  <path d="m1098 121 15 5-2-16" fill="none" stroke="#b5d6a6" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M1127 179a65 65 0 0 1-113 41" fill="none" stroke="#d6a478" stroke-width="6" stroke-linecap="round"/>
+  <path d="m1026 223-15-5 2 16" fill="none" stroke="#d6a478" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1062" y="190" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="52" font-weight="700" fill="#f5f2e9">{ }</text>
+</svg>

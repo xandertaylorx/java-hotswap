@@ -1,41 +1,181 @@
+<p align="center">
+  <img src="assets/readme-banner.svg" alt="Java HotSwap for Zed — change the code, keep the JVM running" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/xandertaylorx/java-hotswap/actions/workflows/ci.yml"><img src="https://github.com/xandertaylorx/java-hotswap/actions/workflows/ci.yml/badge.svg" alt="Verification workflow status"></a>
+  <a href="docs/validation.md"><img src="https://img.shields.io/badge/Java-17%20%7C%2021%20%7C%2025-244e45" alt="Java 17, 21 and 25"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-d6a478" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/version-0.1.0-52635b" alt="Version 0.1.0">
+</p>
+
+<p align="center">
+  <a href="#quick-start"><strong>Quick start</strong></a> ·
+  <a href="#examples">Examples</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="docs/validation.md">Test results</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
+
 # Java HotSwap for Zed
 
-Save Java source, compile with the project's build tool, and redefine compatible classes in the **same running JVM**. Rust Zed extension + Rust companion + dependency-free Java instrumentation agent. MIT licensed.
+**Edit Java. Save. See compatible changes in the same running JVM.**
 
-This is the first working release, not a promise that every Java launch environment is supported. Standard Gradle Java/application projects, Maven projects/reactors, and conventional plain Java entry points are implemented. See [tested scope and limitations](docs/compatibility.md). There is no automatic restart.
+Java HotSwap connects Zed to your project's compiler and a small Java instrumentation agent. It detects supported projects, compiles saved Java changes, and automatically reloads compatible classes. Your application keeps running, and the existing Java extension continues to handle editing and diagnostics.
 
-## Install once
+> [!NOTE]
+> **First working release.** A one-time companion installation is required. Load the Zed extension as a dev extension; marketplace publication is pending. [Supported scope and limitations →](docs/compatibility.md)
 
-Prerequisites: Rust (rustup), JDK 17 or newer, and the project's Gradle/Maven wrapper or an installed build tool. Use a Gradle version compatible with your JDK; Gradle 9.1 supports running on Java 25. Existing Gradle toolchains are respected.
+## See the idea
 
-From this repository:
+Change an existing method in your application:
+
+```diff
+ static int explosionRadius() {
+-    return 0;
++    return 10;
+ }
+```
+
+Save the file. After compilation succeeds, the next invocation uses the new code. The console examples demonstrate this behavior:
+
+```text
+Before save:  radius=0  pid=4242
+After reload: radius=10 pid=4242
+```
+
+*Illustrative output: the value changes; the JVM PID stays the same.*
+
+## What you get
+
+| | Behavior |
+|---|---|
+| **Project discovery** | Detects Gradle, Maven, and conventional plain Java projects, source directories, class outputs, and entry points. |
+| **Automatic compilation** | Debounces saves and runs one build at a time. Gradle and Maven use their existing build systems. |
+| **Compatible class reloads** | Reloads method bodies and logic using `Instrumentation.redefineClasses`. |
+| **Failure recovery** | Compilation errors, rejected structural changes, and reload-snapshot failures leave the application running. |
+| **Zed integration** | Run, Stop, Clear, and Inspect tasks, plus a native launch/output adapter. |
+| **Build files preserved** | Uses temporary discovery/configuration files; no edits to your Gradle or Maven build files. |
+
+There is **no automatic restart**. Structural changes are reported explicitly so you can decide when to restart.
+
+## Quick start
+
+### 1. Install the companion and extension
+
+You need **Rust via rustup**, **JDK 17+**, and your project's Gradle/Maven wrapper or an installed build tool. Use a build-tool version compatible with your JDK; Gradle 9.1 supports running on Java 25. Existing Gradle toolchains are respected.
 
 ```sh
+git clone https://github.com/xandertaylorx/java-hotswap.git
+cd java-hotswap
+
 cargo install --locked --path companion
 rustup target add wasm32-wasip2
 cargo build --locked --release --target wasm32-wasip2
 ```
 
-The agent JAR is embedded in the companion; no manual agent installation or project build-file edits are needed. Ensure `~/.cargo/bin` is on the PATH visible to Zed and restart Zed after installation. In Zed run **zed: install dev extension** and select this repository root. Keep the existing **Java** extension installed for editing, diagnostics, and Java debugging.
+The agent JAR is embedded in the companion, so there is no separate agent installation.
 
-**Marketplace installation alone is insufficient in this release.** The extension locates `java-hotswap` on PATH; it does not download unpublished binaries. This repository is not yet published in the marketplace. [Publication checklist](docs/publishing.md).
+In Zed:
 
-## Use in any supported project
+1. Ensure `~/.cargo/bin` is on the PATH visible to Zed, then restart Zed.
+2. Run **zed: install dev extension** and select the cloned repository.
+3. Keep the existing **Java** extension installed for language support and Java debugging.
 
-One time, run `java-hotswap tasks`, then use **zed: open tasks** to add the entries from [zed-tasks.json](zed-tasks.json) to your global task array. Preserve existing tasks. These tasks are available in every worktree; no per-project task file is required.
+### 2. Add global tasks once
 
-1. Open the Java project at its build root.
-2. Run **task: spawn → Java HotSwap: Run**.
-3. Change `return 0;` to `return 10;` in an existing method and save.
-4. Watch `COMPILED`, `RELOADED`, and the changed application output in the task terminal.
+```sh
+java-hotswap tasks
+```
 
-Use **Java HotSwap: Stop**, Ctrl-C in the Run terminal, or close the debugger session to stop. **Clear status** clears the active task terminal using ANSI terminal control. It does not erase the debugger's output history; use Zed's output controls for that. **Inspect project** shows the build system, directories, toolchain, and entry-point candidates.
+Use **zed: open tasks** and add the entries from [zed-tasks.json](zed-tasks.json) to your global task array, preserving any existing tasks. They become available across your worktrees; no per-project task file is required.
 
-JVM redefinition updates method code. Changing a field initializer does not update values already stored in objects or rerun initialization. Changes to literals or assignments inside methods take effect when those methods execute again.
+### 3. Run, edit, save
 
-Compilation failures are printed with the build tool's file/line diagnostics. Existing JDTLS supplies editor diagnostics. This extension does not add a second Java language server or a separate Problems provider.
+1. Open a supported Java project at its build root.
+2. Choose **task: spawn → Java HotSwap: Run**.
+3. Edit an existing method and save.
+4. Watch the compilation output and `RELOADED` messages in the task terminal.
 
-For native launch/output UI, add a scenario to your project's `.zed/debug.json` array:
+| Task | Purpose |
+|---|---|
+| **Java HotSwap: Run** | Builds, starts the application with the agent, and watches Java sources. |
+| **Java HotSwap: Stop** | Stops the session, including an active compilation. Ctrl-C in the Run terminal also stops it. |
+| **Java HotSwap: Clear status** | Clears the active task terminal with ANSI terminal control. |
+| **Java HotSwap: Inspect project** | Shows discovered directories, toolchains, modules, and entry-point candidates. |
+
+Compilation errors retain the build tool's file/line diagnostics. Existing JDTLS provides editor diagnostics. Clear does not erase debugger output history; use Zed's output controls for that.
+
+## Project support
+
+| Project | Launch and compilation |
+|---|---|
+| **Gradle** | Java/application projects and multi-module builds. Reads main source sets, runtime classpaths, application settings, and the Java launcher. Uses `classes` tasks on saves. |
+| **Maven** | Standard projects and reactors. Reads the effective POM and runtime dependencies. Performs an initial `package -DskipTests`, then uses `compile` on saves. |
+| **Plain Java** | Conventional source layouts with a detected main method and optional extra classpath. Compiles all sources safely with `javac`. |
+| **LWJGL** | Working Gradle example; inherits `-XstartOnFirstThread` on macOS. |
+
+Java **17, 21, and 25** have been exercised on macOS Apple Silicon. An x86-64 companion was also tested under Rosetta. Linux has CI jobs configured; Windows remains experimental. Actual Intel hardware, Linux/Windows runtimes, and live Zed UI integration have not been verified locally. [Full validation record →](docs/validation.md)
+
+> [!IMPORTANT]
+> Standard JVM HotSwap rules apply. Changing method code does not rerun initializers or update values already stored in objects. Field/method additions, inheritance changes, and other structural edits may require a manual restart. Custom launchers, Android, module-path applications, and composite Gradle builds are outside automatic support in this release. [Compatibility details →](docs/compatibility.md)
+
+## Examples
+
+Each console example prints an explosion radius and its JVM PID, making reloads easy to observe.
+
+| Example | What it demonstrates |
+|---|---|
+| [Plain Java](examples/plain) | A minimal project with no build tool. |
+| [Gradle](examples/gradle) | Application detection and an external runtime dependency. |
+| [Maven](examples/maven) | POM discovery and an external runtime dependency. |
+| [Gradle multi-module](examples/gradle-multi) | Reloading a class in a dependency module. |
+| [Maven multi-module](examples/maven-multi) | Reactor dependencies launched from class directories. |
+| [LWJGL](examples/lwjgl) | A GLFW window whose title changes after a method reload. |
+
+For a first try, open `examples/plain` in Zed and run **Java HotSwap: Run**. Change `return 0;` to `return 10;`, then save.
+
+## Configuration and debugging
+
+A single conventional `public static void main(String[] args)` is detected automatically. Gradle's `application.mainClass` takes precedence within its module. Multiple candidates produce a selection error with the discovered entry points.
+
+<details>
+<summary><strong>Choose an entry point or customize JVM arguments</strong></summary>
+
+Create `.java-hotswap.json` in the project root only when needed:
+
+```json
+{
+  "mainClass": "demo.Main",
+  "module": ":app",
+  "jvmArgs": [],
+  "args": [],
+  "debounceMs": 250
+}
+```
+
+| Option | Use |
+|---|---|
+| `mainClass` | Fully qualified entry point. |
+| `module` | Gradle project path or absolute Maven module directory; Inspect shows the exact value. |
+| `javaHome` | Select a JDK; relative paths resolve from the project. Otherwise uses Gradle's launcher or `JAVA_HOME`/PATH. |
+| `jvmArgs` | Additional JVM arguments, such as `-XstartOnFirstThread` for a macOS application that needs it. |
+| `args` | Application arguments. |
+| `buildArgs` | Build-tool options, such as Maven profiles. |
+| `classpath` | Additional directories/JARs for plain Java. |
+| `debounceMs` | Save debounce interval; defaults to 250 ms. |
+| `jdwpPort` | Optional loopback debugger port for Java attach. |
+
+For multi-module overrides, set both `module` and `mainClass`. Gradle application default JVM arguments are inherited; the LWJGL example already declares the macOS first-thread argument.
+
+Unknown fields fail explicitly. Stop and start the session after changing build configuration so the project is rediscovered.
+
+</details>
+
+<details>
+<summary><strong>Use Zed's native launch/output UI</strong></summary>
+
+Add a scenario to your project's `.zed/debug.json` array:
 
 ```json
 {
@@ -46,27 +186,16 @@ For native launch/output UI, add a scenario to your project's `.zed/debug.json` 
 }
 ```
 
-Then use **debugger: start**. This adapter manages launching, output, and stopping; it reports breakpoints as unverified. For stepping and breakpoints, use the existing Java adapter with JDWP attach as described below. Automatic scenario generation from Java gutter runnables is not implemented.
+Choose **debugger: start**. Closing the session stops the application.
 
-## Optional project configuration
+This adapter manages launching, output, and stopping. It reports breakpoints as unverified; use the existing Java adapter for stepping and breakpoints. Automatic Java gutter scenario generation is not implemented, and live Zed UI testing remains outstanding.
 
-A single conventional `public static void main(String[] args)` is detected automatically. Gradle's `application.mainClass` takes precedence within its module. Multiple applications produce a clear selection error rather than launching an arbitrary entry point. Create `.java-hotswap.json` only when needed:
+</details>
 
-```json
-{
-  "mainClass": "demo.Main",
-  "module": ":app",
-  "jvmArgs": ["-XstartOnFirstThread"],
-  "args": [],
-  "debounceMs": 250
-}
-```
+<details>
+<summary><strong>Attach the existing Java debugger</strong></summary>
 
-`module` is a Gradle project path or an absolute Maven module directory. Use **Inspect project** for its exact value. For multiple modules, set both `module` and `mainClass` when overriding detection. Optional `javaHome` chooses a JDK (relative paths resolve from the project); otherwise Gradle's selected launcher or `JAVA_HOME`/PATH is used. `buildArgs` passes build-tool options, e.g. Maven profiles. `classpath` adds directories/JARs for plain Java. Unknown configuration fields fail explicitly. Build configuration changes require stopping and starting the session to rediscover the project.
-
-Gradle application default JVM arguments are inherited. The LWJGL example includes `-XstartOnFirstThread` on macOS. Add that argument yourself when a custom Java/application setup doesn't declare it.
-
-To enable ordinary Java debugging, add `"jdwpPort": 5005` to this config, start HotSwap, then launch an existing Java extension attach scenario:
+Add `"jdwpPort": 5005` to `.java-hotswap.json`, start HotSwap, and launch an existing Java extension attach scenario:
 
 ```json
 {
@@ -78,9 +207,11 @@ To enable ordinary Java debugging, add `"jdwpPort": 5005` to this config, start 
 }
 ```
 
-JDWP binds to loopback. Java attach is an integration path, not a debugger reimplementation; live Zed attach has not been verified here. Avoid another tool simultaneously redefining the same classes.
+JDWP binds to loopback. Live Zed Java attach has not been verified here. Avoid another tool simultaneously redefining the same classes.
 
-## Build and test
+</details>
+
+## Development
 
 ```sh
 cargo fmt --check
@@ -93,10 +224,29 @@ python3 tests/e2e.py -v
 cargo build --locked --release --target wasm32-wasip2
 ```
 
-E2E tests require Gradle and Maven on PATH, or `JAVA_HOTSWAP_GRADLE` / `JAVA_HOTSWAP_MAVEN` absolute paths. They copy fixtures to paths containing spaces, start real JVMs, edit sources, verify changed output **and unchanged PID**, reject structural changes, recover from invalid source, check duplicate sessions, and verify stop cleanup. DAP tests exercise actual framed stdin/stdout and SIGTERM cleanup. Another test saves during an active build and cancels a subsequent build. CI defines macOS/Linux and Java 17/21/25 jobs; workflow presence alone does not establish passing results. Local results are in [validation.md](docs/validation.md).
+The end-to-end tests start real JVMs, edit real source files, and assert changed output **with the same PID**. They also cover compilation failures, structural-change rejection, recovery, duplicate sessions, saves during compilation, cancellation, DAP shutdown, and snapshot-publication errors.
 
-Examples: [plain](examples/plain), [Gradle](examples/gradle), [Maven](examples/maven), [Gradle multi-module](examples/gradle-multi), [Maven multi-module](examples/maven-multi), [LWJGL](examples/lwjgl).
+Gradle and Maven must be on PATH, or supplied through `JAVA_HOTSWAP_GRADLE` and `JAVA_HOTSWAP_MAVEN` as absolute paths. CI defines macOS/Linux × Java 17/21/25 jobs; see the workflow badge for current GitHub results and [validation.md](docs/validation.md) for executed local results.
 
-To test the native GLFW window on an active desktop, run `JAVA_HOTSWAP_TEST_LWJGL=1 python3 tests/e2e.py HotSwap.test_lwjgl -v`. Headless CI skips that graphical test.
+Run the graphical test on an active desktop:
 
-Read [architecture](docs/architecture.md), [API research](docs/api-research.md), and [contributing](CONTRIBUTING.md). Add `.java-hotswap/` to your own project's ignore rules if you want generated session data hidden from Git; the tool never edits your ignore file.
+```sh
+JAVA_HOTSWAP_TEST_LWJGL=1 python3 tests/e2e.py HotSwap.test_lwjgl -v
+```
+
+Headless CI skips that test. Add `.java-hotswap/` to your own project's ignore rules to hide generated session data; the tool never edits your ignore file.
+
+## Documentation
+
+| Guide | Contents |
+|---|---|
+| [Architecture](docs/architecture.md) | Project discovery, compilation, immutable reload snapshots, and process ownership. |
+| [API research](docs/api-research.md) | Official Zed capabilities and the supported integration choices. |
+| [Compatibility](docs/compatibility.md) | Build-system, JVM, and platform boundaries. |
+| [Validation](docs/validation.md) | Executed checks and unverified environments. |
+| [Publication](docs/publishing.md) | Marketplace prerequisites and release workflow. |
+| [Contributing](CONTRIBUTING.md) | Development expectations and testing new integrations. |
+
+---
+
+**MIT licensed.** See [LICENSE](LICENSE). Contributions and reproducible bug reports are welcome through [GitHub issues](https://github.com/xandertaylorx/java-hotswap/issues).
