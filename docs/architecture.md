@@ -4,6 +4,7 @@ The WASM extension is only the supported Zed adapter registration/lookup layer. 
 
 - `src/lib.rs`: SDK binary discovery and launch request declaration.
 - `companion/src/project.rs`: Gradle/Maven/plain discovery, classpaths, entry detection, compilation, source snapshots.
+- `companion/src/gradle_runtime.rs`, `jdks.rs`, `properties.rs`: wrapper/version preflight, Gradle runtime compatibility, platform JDK discovery, Java properties parsing.
 - `companion/src/session.rs`: exclusive project session lock, debounce, serial build scheduling, JVM lifecycle, build commits.
 
 Workspace discovery selects build roots before source scanning. It walks subdirectories until a Gradle or Maven root is found, then treats that build's module tree as owned by the build tool. A single root is automatic; multiple independent roots require `projectRoot` (launch/config) or `--project-root` (CLI). Explicit invalid selections, conflicting build markers, unreadable traversal paths and failed builds are errors, never triggers for plain javac fallback. Session state and control files remain under `cwd/.java-hotswap`; the build tool and JVM run from the selected build root. Gradle supplies actual SourceSet output/runtime paths, application entry point, application/default and run-task JVM arguments, and the run-task Java launcher.

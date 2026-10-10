@@ -15,6 +15,13 @@ jobs:
           targets: wasm32-wasip2
           components: rustfmt, clippy
       - uses: actions/setup-java@v4
+        if: matrix.java == '25'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - if: matrix.java == '25'
+        run: echo "JAVA_HOTSWAP_TEST_JDK21=$JAVA_HOME" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}

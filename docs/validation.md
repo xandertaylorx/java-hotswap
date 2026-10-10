@@ -4,6 +4,19 @@ Local verification on 2026-10-10, macOS Apple Silicon. These are executed result
 
 Toolchains: Rust 1.97.1; zed_extension_api 0.7.0; Temurin Java 17.0.20.1, 21.0.10, 25.0.2; Gradle 9.1.0; Maven 3.9.11. The embedded agent's classfile major version is 61 (Java 17).
 
+## Gradle runtime compatibility fix — 2026-10-11
+
+Verified locally on macOS Apple Silicon with the rebuilt release companion and Java 25 as the default:
+
+- Gradle 8.10 selected the installed Java 21 build runtime, compiled the nested LWJGL 3.3.6/Gson fixture with its configured Java 21 toolchain, and reloaded a method change with the same JVM PID. Wrapper properties, wrapper script and build script remained byte-for-byte unchanged.
+- Gradle 9.1 retained Java 25. A separate case ran Gradle on Java 25 while preserving the application's Java 21 toolchain and launcher.
+- The complete release suite ran 22 cases: 21 passed and one graphical test was skipped. The additional custom-wrapper report test passed separately, as did the GLFW graphical reload test (23 distinct integration cases verified overall).
+- Unknown distribution names, incompatible daemon criteria, incompatible explicit build JDKs, and conflicting version/launcher JVM reports were rejected before build scripts ran. Rust selection tests verified an actionable error when only an incompatible Java 25 JDK is available for Gradle 8.10.
+- Ten Rust tests passed, including compatibility boundaries, Java properties escapes/continuations, and discovery through macOS, Linux and Windows installation layouts. Formatting, clippy with warnings denied, and native/WASM release builds passed.
+- The local installed companion was replaced with the rebuilt release. CI now installs Java 21 alongside the default Java 25 for the compatibility regressions on macOS and Linux.
+
+The embedded compatibility table follows the [official Gradle runtime matrix](https://docs.gradle.org/current/userguide/compatibility.html); daemon criteria remain Gradle-managed under [Gradle's documented precedence](https://docs.gradle.org/current/userguide/gradle_daemon.html#sec:daemon_jvm_criteria). Native Windows and live Zed UI execution are unverified. Existing Minecraft projects were not modified.
+
 ## Nested-build detection fix
 
 Verified with the rebuilt native arm64 release companion on Java 25 / Gradle 9.1:

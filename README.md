@@ -162,6 +162,16 @@ The CLI equivalent is `java-hotswap run --project /path/to/workspace --project-r
 
 Discovery skips symlinks and generated/cache directories such as `.git`, `.gradle`, `.java-hotswap`, `build`, `build.nosync`, `target`, and `node_modules`. Use an explicit `projectRoot` for a build in an excluded directory. Plain Java compilation is used only when no build is found; an invalid explicit build selection produces an error.
 
+### Gradle and Java compatibility
+
+HotSwap reads `gradle/wrapper/gradle-wrapper.properties` before starting the wrapper and checks the [Gradle runtime compatibility matrix](https://docs.gradle.org/current/userguide/compatibility.html). For example, Gradle 8.10 supports runtime Java 8–23; Java 25 support starts with Gradle 9.1. If your default JDK is incompatible, HotSwap selects a compatible installed JDK for Gradle. Gradle still selects the application's compiler and launcher through its toolchain configuration. The wrapper and build files are never upgraded or rewritten.
+
+JDK discovery checks `JAVA_HOME`, PATH, platform installation directories on macOS/Linux/Windows, Homebrew, SDKMAN, asdf, Jabba, user `.jdks`, and Gradle's downloaded JDKs. Windows JavaSoft registry entries are also checked. Additional installation roots can be supplied with `JAVA_HOTSWAP_JDK_PATHS` (a platform-separated path list). A JDK must contain Java, javac and release metadata, and the selected executable must start successfully. Early-access JDKs are excluded from automatic selection.
+
+Use `gradleJavaHome` only when you want to select the build JDK explicitly; `javaHome` remains the application JDK override. Existing `org.gradle.java.home` settings are validated and respected unless explicitly overridden by `gradleJavaHome`. Gradle daemon JVM criteria keep their normal precedence and vendor selection; incompatible requested runtime versions produce an actionable error. If no compatible JDK is installed, HotSwap tells you the supported range and how to provide a build JDK before executing build scripts.
+
+Versioned distributions on custom hosts are accepted, then checked against the wrapper's actual `--version` output and reported launcher JVM. Unversioned/custom distribution names require a verified `gradleVersion` in the HotSwap configuration. Mismatches and unrecognized version/JVM output stop preflight. No build scripts are used to guess the version. Stable Gradle 7.3–9.8.1 is covered by the embedded table; prereleases and versions outside that table require an extension compatibility update.
+
 <details>
 <summary><strong>Choose an entry point or customize JVM arguments</strong></summary>
 
@@ -183,6 +193,8 @@ Create `.java-hotswap.json` in the workspace (`cwd`) only when needed:
 | `mainClass` | Fully qualified entry point. |
 | `module` | Gradle project path or absolute Maven module directory; Inspect shows the exact value. |
 | `javaHome` | Select a JDK; relative paths resolve from the workspace. Otherwise uses Gradle's application launcher or `JAVA_HOME`/PATH. |
+| `gradleJavaHome` | Explicit compatible Gradle runtime JDK; independent of the application's `javaHome` and toolchains. Relative paths resolve from the workspace. |
+| `gradleVersion` | Verified stable version for custom/unversioned Gradle distributions or launchers; checked against actual wrapper output. |
 | `jvmArgs` | Additional JVM arguments, such as `-XstartOnFirstThread` for a macOS application that needs it. |
 | `args` | Application arguments. |
 | `buildArgs` | Build-tool options, such as Maven profiles. |

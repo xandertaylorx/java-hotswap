@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 pub type Emit = Arc<dyn Fn(&str, &str) + Send + Sync>;
-pub struct Managed(pub Child);
+pub struct Managed(pub Child, Vec<thread::JoinHandle<()>>);
 impl Managed {
     pub fn spawn(command: &mut Command, emit: &Emit) -> Result<Self, String> {
         command
@@ -29,21 +29,22 @@ impl Managed {
         })?;
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
+        let mut readers = vec![];
         for (reader, category) in [
             (Box::new(stdout) as Box<dyn std::io::Read + Send>, "stdout"),
             (Box::new(stderr), "stderr"),
         ] {
             let emit = emit.clone();
-            thread::spawn(move || {
+            readers.push(thread::spawn(move || {
                 for line in BufReader::new(reader).lines() {
                     match line {
                         Ok(line) => emit(category, &format!("{line}\n")),
                         Err(_) => break,
                     }
                 }
-            });
+            }));
         }
-        Ok(Self(child))
+        Ok(Self(child, readers))
     }
     pub fn wait(&mut self, stop: &AtomicBool) -> Result<bool, String> {
         loop {
@@ -55,6 +56,32 @@ impl Managed {
             }
             thread::sleep(Duration::from_millis(50));
         }
+    }
+}
+/// Capture small preflight command output while retaining cancellation and owned
+/// process-group cleanup. Joining readers avoids racing the final output lines.
+pub fn capture(command: &mut Command, stop: &AtomicBool) -> Result<String, String> {
+    let output = Arc::new(std::sync::Mutex::new(String::new()));
+    let collected = output.clone();
+    let emit: Emit = Arc::new(move |_, text| {
+        let mut output = collected.lock().unwrap();
+        if output.len() < 1024 * 1024 {
+            output.push_str(text);
+        }
+    });
+    let mut child = Managed::spawn(command, &emit)?;
+    let success = child.wait(stop)?;
+    for reader in child.1.drain(..) {
+        let _ = reader.join();
+    }
+    let text = output.lock().unwrap().clone();
+    if success {
+        Ok(text)
+    } else {
+        Err(format!(
+            "Preflight command failed: {}\n{text}",
+            command.get_program().to_string_lossy()
+        ))
     }
 }
 impl Drop for Managed {

@@ -36,6 +36,7 @@ pub struct Project {
     pub kind: String,
     pub modules: Vec<Module>,
     pub tool: PathBuf,
+    pub gradle_runtime: Option<crate::gradle_runtime::Runtime>,
 }
 pub fn jdk_tool(home: Option<&Path>, name: &str) -> PathBuf {
     let home = home
@@ -178,8 +179,16 @@ impl Project {
             kind: kind.into(),
             modules: vec![],
             tool: build_tool(&root, if kind == "gradle" { "gradle" } else { "mvn" }),
+            gradle_runtime: None,
         };
         if kind == "gradle" {
+            project.gradle_runtime = Some(crate::gradle_runtime::prepare(
+                &root,
+                &project.tool,
+                config,
+                emit,
+                stop,
+            )?);
             fs::write(
                 state.join("init.gradle"),
                 include_str!("../gradle.init.gradle"),
@@ -268,7 +277,9 @@ impl Project {
     fn command(&self, config: &Config) -> Command {
         let mut cmd = Command::new(&self.tool);
         cmd.current_dir(&self.root);
-        if let Some(home) = &config.java_home {
+        if let Some(runtime) = &self.gradle_runtime {
+            runtime.configure(&mut cmd);
+        } else if let Some(home) = &config.java_home {
             cmd.env("JAVA_HOME", home);
         }
         cmd.args(&config.build_args);

@@ -1,6 +1,9 @@
 mod dap;
+mod gradle_runtime;
+mod jdks;
 mod process;
 mod project;
+mod properties;
 mod session;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -22,6 +25,8 @@ pub struct Config {
     pub main_class: Option<String>,
     pub module: Option<String>,
     pub java_home: Option<PathBuf>,
+    pub gradle_java_home: Option<PathBuf>,
+    pub gradle_version: Option<String>,
     pub jvm_args: Vec<String>,
     pub args: Vec<String>,
     pub classpath: Vec<PathBuf>,
@@ -37,6 +42,8 @@ impl Default for Config {
             main_class: None,
             module: None,
             java_home: None,
+            gradle_java_home: None,
+            gradle_version: None,
             jvm_args: vec![],
             args: vec![],
             classpath: vec![],
@@ -60,6 +67,11 @@ impl Config {
         if let Some(home) = &config.java_home {
             if !home.is_absolute() {
                 config.java_home = Some(config.cwd.join(home));
+            }
+        }
+        if let Some(home) = &config.gradle_java_home {
+            if !home.is_absolute() {
+                config.gradle_java_home = Some(config.cwd.join(home));
             }
         }
         Ok(config)

@@ -114,6 +114,108 @@ class HotSwap(unittest.TestCase):
     def test_nested_gradle(self): self.exercise('nested-gradle')
     def test_nested_maven(self): self.exercise('maven', nested=True)
 
+    def gradle_jdk_case(self, version, toolchain, runtime):
+        def home(major):
+            options = [os.environ.get(f'JAVA_HOTSWAP_TEST_JDK{major}', ''), os.environ.get('JAVA_HOME', ''),
+                       f'/Library/Java/JavaVirtualMachines/temurin-{major}.jdk/Contents/Home']
+            for candidate in options:
+                if candidate and (Path(candidate) / 'release').is_file() and re.search(rf'JAVA_VERSION="{major}[.\"]', (Path(candidate) / 'release').read_text()): return candidate
+            self.skipTest(f'requires Java {major}; set JAVA_HOTSWAP_TEST_JDK{major}')
+        java25, java21 = home(25), home(21)
+        with tempfile.TemporaryDirectory(prefix='hotswap Gradle JDK ') as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/nested-gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build.nosync', '.gradle', '.java-hotswap'))
+            wrapper = root / 'java/gradle/wrapper/gradle-wrapper.properties'
+            wrapper.write_text(wrapper.read_text().replace('gradle-9.1.0-bin.zip', f'gradle-{version}-bin.zip'))
+            build = root / 'java/build.gradle'
+            build.write_text(build.read_text() + f'\njava {{ toolchain {{ languageVersion = JavaLanguageVersion.of({toolchain}) }} }}\n')
+            before = {p:p.read_bytes() for p in [wrapper, build, root / 'java/gradlew']}
+            env = os.environ.copy()
+            env['JAVA_HOME'] = java25
+            env['JAVA_HOTSWAP_JDK_PATHS'] = os.pathsep.join([java25, java21])
+            env['JAVA_HOTSWAP_GRADLE'] = str(root / 'missing-global-gradle')
+            session = Session(root, env)
+            try:
+                line = session.wait(r'radius=0 pid=')
+                pid = re.search(r'pid=(\d+)', line)[1]
+                session.wait(rf'GRADLE {version}(?:\.0)? runtime Java {runtime}\b')
+                module = json.loads((root / '.java-hotswap/gradle.json').read_text())[0]
+                self.assertEqual(Path(module['java']).resolve().parent.parent, Path(home(toolchain)).resolve())
+                source = root / 'java/src/main/java/blockland/Main.java'
+                offset = len(session.lines)
+                source.write_text(source.read_text().replace('return 0;', 'return 10;'))
+                session.wait(rf'radius=10 pid={pid}\b', offset)
+                self.assertNotIn('Unsupported class file major version', ''.join(session.lines))
+                for path, content in before.items(): self.assertEqual(path.read_bytes(), content)
+            finally: session.close()
+
+    def test_gradle810_with_java25_default(self): self.gradle_jdk_case('8.10', 21, 21)
+    def test_gradle91_with_java25_default(self): self.gradle_jdk_case('9.1.0', 25, 25)
+    def test_gradle91_runtime25_preserves_java21_toolchain(self): self.gradle_jdk_case('9.1.0', 21, 25)
+
+    def test_gradle_preflight_errors_before_build_scripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/nested-gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build.nosync', '.gradle', '.java-hotswap'))
+            props = root / 'java/gradle/wrapper/gradle-wrapper.properties'
+            props.write_text(props.read_text().replace('gradle-9.1.0-bin.zip', 'unknown-distribution.zip'))
+            result = subprocess.run([str(BINARY), 'run', '--project', tmp], capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('set gradleVersion', result.stdout + result.stderr)
+            self.assertNotIn('> Task', result.stdout + result.stderr)
+            self.assertFalse((root / 'java/build.nosync').exists())
+            props.write_text(props.read_text().replace('unknown-distribution.zip', 'gradle-8.10-bin.zip'))
+            daemon = root / 'java/gradle/gradle-daemon-jvm.properties'
+            daemon.write_text('toolchainVersion=25\n')
+            result = subprocess.run([str(BINARY), 'run', '--project', tmp], capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('requests Java 25', result.stdout + result.stderr)
+            self.assertNotIn('> Task', result.stdout + result.stderr)
+            self.assertEqual(daemon.read_text(), 'toolchainVersion=25\n')
+
+    def test_gradle_incompatible_explicit_runtime(self):
+        java25 = os.environ.get('JAVA_HOTSWAP_TEST_JDK25', os.environ.get('JAVA_HOME', ''))
+        if not java25 or not (Path(java25) / 'release').is_file() or not re.search(r'JAVA_VERSION="25[.\"]', (Path(java25) / 'release').read_text()):
+            self.skipTest('requires Java 25 default')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/nested-gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build.nosync', '.gradle', '.java-hotswap'))
+            wrapper = root / 'java/gradle/wrapper/gradle-wrapper.properties'
+            wrapper.write_text(wrapper.read_text().replace('gradle-9.1.0-bin.zip', 'gradle-8.10-bin.zip'))
+            for setting in ['gradleJavaHome', 'org.gradle.java.home']:
+                with self.subTest(setting=setting):
+                    if setting == 'gradleJavaHome':
+                        (root / '.java-hotswap.json').write_text(json.dumps({setting:java25}))
+                    else:
+                        (root / '.java-hotswap.json').unlink()
+                        (root / 'java/gradle.properties').write_text(setting+'='+java25.replace('\\', '\\\\')+'\n')
+                    result = subprocess.run([str(BINARY), 'run', '--project', tmp], capture_output=True, text=True, timeout=30)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('requires a runtime JDK in Java 8–23', result.stdout + result.stderr)
+                    self.assertNotIn('> Task', result.stdout + result.stderr)
+
+    @unittest.skipIf(os.name == 'nt', 'custom Unix launcher fixture')
+    def test_custom_gradle_wrapper_reports_are_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'gradle/wrapper').mkdir(parents=True)
+            (root / 'build.gradle').write_text("throw new GradleException('MUST_NOT_EXECUTE')")
+            (root / 'gradle/wrapper/gradle-wrapper.properties').write_text('distributionUrl=https\\://private.example/custom.zip\n')
+            (root / '.java-hotswap.json').write_text(json.dumps({'gradleVersion':'8.10'}))
+            wrapper = root / 'gradlew'
+            for reported, jvm, error in [('9.1.0', '21', 'Wrapper reported Gradle 9.1.0'),
+                                          ('8.10', '25', 'wrapper launched Java 25')]:
+                with self.subTest(reported=reported, jvm=jvm):
+                    wrapper.write_text('#!/bin/sh\ncase " $* " in\n*" --version "*) printf "Gradle '+reported+'\\nLauncher JVM: '+jvm+'.0.1\\n";;\n*) touch build-script-executed;;\nesac\n')
+                    wrapper.chmod(0o755)
+                    result = subprocess.run([str(BINARY), 'run', '--project', tmp], capture_output=True, text=True, timeout=30)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(error, result.stdout + result.stderr)
+                    self.assertFalse((root / 'build-script-executed').exists())
+
     def test_multiple_builds_and_explicit_selection(self):
         with tempfile.TemporaryDirectory(prefix='hotswap multiple ') as tmp:
             root = Path(tmp)
