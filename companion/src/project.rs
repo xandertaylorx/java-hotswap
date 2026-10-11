@@ -564,12 +564,31 @@ impl Project {
             return Err("mainClass is ambiguous across modules; set module explicitly".into());
         }
         let mut entries = vec![];
+        let selected_source = config
+            .main_source
+            .as_ref()
+            .map(|source| {
+                let source = if source.is_absolute() {
+                    source.clone()
+                } else {
+                    config.cwd.join(source)
+                };
+                fs::canonicalize(&source).map_err(|e| {
+                    format!("Cannot read selected main source {}: {e}", source.display())
+                })
+            })
+            .transpose()?;
         for m in modules {
-            if let Some(main) = &m.main_class {
+            if let Some(main) = m.main_class.as_ref().filter(|_| selected_source.is_none()) {
                 entries.push((main.clone(), m));
                 continue;
             }
             for path in java_files(&m.sources)? {
+                if let Some(selected) = &selected_source {
+                    if fs::canonicalize(&path).map_err(|e| e.to_string())? != *selected {
+                        continue;
+                    }
+                }
                 let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
                 // Conventional main only; ambiguity is explicit, never silently choose a process.
                 let cleaned = strip_comments(&text);
@@ -585,6 +604,8 @@ impl Project {
         }
         if entries.len() == 1 {
             Ok(entries.remove(0))
+        } else if let Some(source) = selected_source {
+            Err(format!("Selected main source {} has no unique supported public static void main(String[] args) in the project's source roots", source.display()))
         } else {
             Err(format!(
                 "Found {} entry points {:?}; set mainClass and module in .java-hotswap.json",
@@ -721,6 +742,51 @@ pub fn snapshot(roots: &[PathBuf]) -> Result<BTreeMap<PathBuf, u64>, String> {
 mod discovery_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn plain_src_discovers_entry_classpath_and_selected_packaged_main() {
+        let w = Workspace::new();
+        w.file("src/HotSwapTest.java");
+        fs::write(
+            w.0.join("src/HotSwapTest.java"),
+            "public class HotSwapTest { public static void main(String[] args) {} }",
+        )
+        .unwrap();
+        let state = w.0.join(".java-hotswap");
+        let mut config = Config {
+            cwd: w.0.clone(),
+            classpath: vec!["lib/external.jar".into()],
+            ..Config::default()
+        };
+        let emit: Emit = std::sync::Arc::new(|_, _| {});
+        let project = Project::discover(&config, &state, &emit, &AtomicBool::new(false)).unwrap();
+        assert_eq!(project.kind, "plain");
+        assert_eq!(project.modules[0].sources, [w.0.join("src")]);
+        assert_eq!(project.modules[0].classes, [state.join("classes")]);
+        assert_eq!(
+            project.modules[0].classpath,
+            [state.join("classes"), w.0.join("lib/external.jar")]
+        );
+        assert_eq!(project.entry(&config).unwrap().0, "HotSwapTest");
+        w.file("src/demo/Packaged.java");
+        fs::write(w.0.join("src/demo/Packaged.java"), "/* package wrong; */ package demo; public class Packaged { public static void main(String... args) {} }").unwrap();
+        assert!(project
+            .entry(&config)
+            .unwrap_err()
+            .contains("Found 2 entry points"));
+        config.main_source = Some("src/demo/Packaged.java".into());
+        assert_eq!(project.entry(&config).unwrap().0, "demo.Packaged");
+        config.main_source = Some("src/HotSwapTest.java".into());
+        assert_eq!(project.entry(&config).unwrap().0, "HotSwapTest");
+        w.file("src/NotMain.java");
+        config.main_source = Some("src/NotMain.java".into());
+        assert!(project
+            .entry(&config)
+            .unwrap_err()
+            .contains("Selected main source"));
+        assert!(!w.0.join(".zed/debug.json").exists());
+        assert!(!state.exists()); // Picker discovery needs no build or generated configuration.
+    }
 
     #[test]
     fn compile_scope_keeps_runtime_consumers_and_excludes_unrelated_modules() {

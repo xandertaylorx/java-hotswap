@@ -24,6 +24,8 @@ pub struct Config {
     /// Build root, relative to the workspace (required for multiple independent builds).
     pub project_root: Option<PathBuf>,
     pub main_class: Option<String>,
+    /// Source selected by Zed's contextual Java main task.
+    pub main_source: Option<PathBuf>,
     pub module: Option<String>,
     pub java_home: Option<PathBuf>,
     pub gradle_java_home: Option<PathBuf>,
@@ -44,6 +46,7 @@ impl Default for Config {
             cwd: PathBuf::from("."),
             project_root: None,
             main_class: None,
+            main_source: None,
             module: None,
             java_home: None,
             gradle_java_home: None,

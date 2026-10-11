@@ -525,15 +525,31 @@ class HotSwap(unittest.TestCase):
 
 
 class Dap(unittest.TestCase):
+    def test_automatic_simple_src_launch_and_reload(self): self.launch_and_shutdown(False, 'simple-src')
+    def test_automatic_packaged_src_selects_main_and_reloads(self): self.launch_and_shutdown(False, 'packaged-src')
     def test_launch_and_disconnect(self): self.launch_and_shutdown(False)
     def test_signal_shutdown(self): self.launch_and_shutdown(True)
     def test_nested_gradle_launch_and_reload(self): self.launch_and_shutdown(False, 'nested-gradle')
     def test_multiple_projects_launch_selection(self): self.launch_and_shutdown(False, 'nested-gradle', selected=True)
     def test_custom_javaexec_launch(self): self.launch_and_shutdown(False, 'javaexec')
-    def launch_and_shutdown(self, signal, fixture='plain', selected=False):
+    def test_contextual_maven_main_launch(self): self.launch_and_shutdown(False, 'maven', contextual=True)
+    def test_contextual_gradle_keeps_run_task(self): self.launch_and_shutdown(False, 'javaexec', contextual=True)
+    def launch_and_shutdown(self, signal, fixture='plain', selected=False, contextual=False):
         with tempfile.TemporaryDirectory(prefix='hotswap dap ') as tmp:
             root = Path(tmp)
-            shutil.copytree(REPO / 'examples' / fixture, root, dirs_exist_ok=True, ignore=shutil.ignore_patterns('build', 'build.nosync', '.gradle', '.java-hotswap', 'work directory', 'extra-runtime'))
+            automatic = fixture in ('simple-src', 'packaged-src')
+            if automatic:
+                source = root / ('src/demo/HotSwapTest.java' if fixture == 'packaged-src' else 'src/HotSwapTest.java')
+                source.parent.mkdir(parents=True)
+                text = (REPO / 'examples/plain/src/Main.java').read_text().replace('class Main', 'class HotSwapTest')
+                if fixture == 'packaged-src':
+                    text = 'package demo;\n' + text
+                    (source.parent / 'Other.java').write_text('package demo; public class Other { public static void main(String[] args) { throw new AssertionError("WRONG_MAIN"); } }')
+                source.write_text(text)
+                self.assertFalse((root / '.zed/debug.json').exists())
+                self.assertFalse((root / '.java-hotswap.json').exists())
+            else:
+                shutil.copytree(REPO / 'examples' / fixture, root, dirs_exist_ok=True, ignore=shutil.ignore_patterns('build', 'build.nosync', '.gradle', '.java-hotswap', 'work directory', 'extra-runtime'))
             if selected:
                 (root / 'other').mkdir()
                 (root / 'other/settings.gradle').write_text("throw new GradleException('UNSELECTED_BUILD_MUST_NOT_EXECUTE')")
@@ -552,19 +568,24 @@ class Dap(unittest.TestCase):
             try:
                 send(1,'initialize',{})
                 launch = {'cwd':str(root),'request':'launch','adapter':'Java HotSwap'}
+                if automatic: launch['mainSource'] = str(source)
+                if contextual: launch['mainSource'] = str(root / 'src/main/java/demo/Main.java')
                 if selected: launch['projectRoot'] = 'java'
                 send(2,'launch',launch)
                 send(3,'configurationDone',{})
                 deadline = time.monotonic()+180
                 while time.monotonic()<deadline and process.poll() is None and not any('radius=0' in m.get('body',{}).get('output','') for m in messages): time.sleep(.05)
                 self.assertTrue(any('radius=0' in m.get('body',{}).get('output','') for m in messages), messages)
-                if fixture == 'nested-gradle':
+                if fixture == 'nested-gradle' or automatic:
                     pid = next(re.search(r'pid=(\d+)', m['body']['output'])[1] for m in messages if 'radius=0' in m.get('body',{}).get('output',''))
-                    source = root / 'java/src/main/java/blockland/Main.java'
+                    if not automatic: source = root / 'java/src/main/java/blockland/Main.java'
                     source.write_text(source.read_text().replace('return 0;', 'return 10;'))
                     deadline = time.monotonic()+180
                     while time.monotonic()<deadline and process.poll() is None and not any(f'radius=10 pid={pid}' in m.get('body',{}).get('output','') for m in messages): time.sleep(.05)
                     self.assertTrue(any(f'radius=10 pid={pid}' in m.get('body',{}).get('output','') for m in messages), messages)
+                    if automatic:
+                        self.assertTrue(any('BUILDING plain / ' + ('demo.' if fixture == 'packaged-src' else '') + 'HotSwapTest' in m.get('body',{}).get('output','') for m in messages), messages)
+                        self.assertFalse((root / '.zed/debug.json').exists())
                 if signal:
                     pid = next(re.search(r'pid=(\d+)', m['body']['output'])[1] for m in messages if 'radius=0' in m.get('body',{}).get('output',''))
                     process.terminate()

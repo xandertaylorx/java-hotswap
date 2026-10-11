@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start"><strong>Quick start</strong></a> ·
+  <a href="#install-and-use"><strong>Install &amp; use</strong></a> ·
   <a href="#examples">Examples</a> ·
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="docs/validation.md">Test results</a> ·
@@ -25,6 +25,26 @@ Java HotSwap connects Zed to your project's compiler and a small Java instrument
 
 > [!NOTE]
 > **First working release.** A one-time companion installation is required. Load the Zed extension as a dev extension; marketplace publication is pending. [Supported scope and limitations →](docs/compatibility.md)
+
+## Install and use
+
+You need **Rust (rustup)** and **JDK 17+**. Install Zed's **Java** extension too.
+
+```sh
+git clone https://github.com/xandertaylorx/java-hotswap.git
+cd java-hotswap
+cargo install --locked --path companion
+rustup target add wasm32-wasip2
+cargo build --locked --release --target wasm32-wasip2
+```
+
+1. In Zed, run **zed: install dev extension** and select this cloned folder. Make sure `~/.cargo/bin` is on Zed's PATH, then restart Zed.
+2. Open your Java project and its main Java file. Run **debugger: start**, choose **Java HotSwap: Run YourClass**.
+3. Edit an existing method and save. Successful builds reload compatible changes in the same JVM.
+
+A plain project containing just `src/HotSwapTest.java` works automatically: **no Gradle, Maven or `.zed/debug.json` required**. Targets come from the Java extension's contextual main tasks, so open the main file to see its target. Packages are resolved from source; selecting another main file selects that entry point.
+
+Gradle launches still inherit the project's JavaExec/run configuration. If several run tasks exist, select `gradleRunTask` in `.java-hotswap.json` (for example `":runClient"`). Maven retains its normal dependency resolution. [More setup options ↓](#quick-start)
 
 ## See the idea
 
@@ -54,7 +74,7 @@ After reload: radius=10 pid=4242
 | **Automatic compilation** | Debounces saves and runs one build at a time. Gradle and Maven use their existing build systems. |
 | **Compatible class reloads** | Reloads method bodies and logic using `Instrumentation.redefineClasses`. |
 | **Failure recovery** | Compilation errors, rejected structural changes, and reload-snapshot failures leave the application running. |
-| **Zed integration** | Run, Stop, Clear, and Inspect tasks, plus a native launch/output adapter. |
+| **Zed integration** | Automatic main-file HotSwap launch targets, a native launch/output adapter, and Run, Stop, Clear and Inspect tasks. |
 | **Safe runtime classpath** | Runs from a private copy of classes, resources and dependency JARs. Failed or destructive builds cannot remove files from that classpath. |
 | **Build files preserved** | Uses temporary discovery/configuration files; no edits to your Gradle or Maven build files. |
 
@@ -93,7 +113,7 @@ Use **zed: open tasks** and add the entries from [zed-tasks.json](zed-tasks.json
 
 ### 3. Run, edit, save
 
-1. Open a supported Java project at its build root.
+1. Open a workspace containing a supported Java project.
 2. Choose **task: spawn → Java HotSwap: Run**.
 3. Edit an existing method and save.
 4. Watch the compilation output and `RELOADED` messages in the task terminal.

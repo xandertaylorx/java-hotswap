@@ -62,6 +62,10 @@
     },
     "noDebug": {
       "type": "boolean"
+    },
+    "mainSource": {
+      "type": "string",
+      "description": "Java source selected by Zed's automatic main target. Resolves its package and entry point; Gradle still uses its JavaExec task."
     }
   },
   "required": [

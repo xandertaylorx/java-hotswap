@@ -8,3 +8,5 @@ repository = "https://github.com/xandertaylorx/java-hotswap"
 
 [debug_adapters."Java HotSwap"]
 schema_path = "debug_adapter_schemas/Java HotSwap.json"
+
+[debug_locators.java-hotswap]
