@@ -110,7 +110,7 @@ Compilation errors retain the build tool's file/line diagnostics. Existing JDTLS
 
 | Project | Launch and compilation |
 |---|---|
-| **Gradle** | Java/application projects and multi-module builds. Reads main source sets, runtime classpaths, application settings, and the Java launcher. Uses `classes` tasks on saves. |
+| **Gradle** | Java/application projects and multi-module builds. Reads main source sets and inherits the selected JavaExec task’s complete launch configuration. Uses `classes` tasks on saves. |
 | **Maven** | Standard projects and reactors. Reads the effective POM and runtime dependencies. Performs an initial `package -DskipTests`, then uses `compile` on saves. |
 | **Plain Java** | Conventional source layouts with a detected main method and optional extra classpath. Compiles all sources safely with `javac`. |
 | **LWJGL** | Working Gradle example; inherits `-XstartOnFirstThread` on macOS. |
@@ -127,6 +127,7 @@ Each console example prints an explosion radius and its JVM PID, making reloads 
 | Example | What it demonstrates |
 |---|---|
 | [Plain Java](examples/plain) | A minimal project with no build tool. |
+| [Custom JavaExec](examples/javaexec) | Required arguments, preparation tasks, environment, working directory, JVM settings, and extra runtime resources. |
 | [Gradle](examples/gradle) | Application detection and an external runtime dependency. |
 | [Maven](examples/maven) | POM discovery and an external runtime dependency. |
 | [Gradle multi-module](examples/gradle-multi) | Reloading a class in a dependency module. |
@@ -138,7 +139,7 @@ For a first try, open `examples/plain` in Zed and run **Java HotSwap: Run**. Cha
 
 ## Configuration and debugging
 
-A single conventional `public static void main(String[] args)` is detected automatically. Gradle's `application.mainClass` takes precedence within its module. Multiple candidates produce a selection error with the discovered entry points.
+Gradle launches through an existing JavaExec task, including the application plugin’s `run` task. A single task is selected automatically; multiple tasks require `gradleRunTask`. Maven and plain Java detect conventional `public static void main(String[] args)` entry points; multiple candidates require an explicit selection.
 
 ### Workspaces with nested Java builds
 
@@ -161,6 +162,28 @@ If the workspace contains several independent builds, discovery lists them and r
 The CLI equivalent is `java-hotswap run --project /path/to/workspace --project-root java`. You can also set `projectRoot` in the workspace's `.java-hotswap.json`. Gradle subprojects and Maven reactor modules belong to their enclosing build; use `module` to select an application within that build. To run separate sessions concurrently, set each scenario's `cwd` to its own build root so session locks and Stop/Clear controls are independent.
 
 Discovery skips symlinks and generated/cache directories such as `.git`, `.gradle`, `.java-hotswap`, `build`, `build.nosync`, `target`, and `node_modules`. Use an explicit `projectRoot` for a build in an excluded directory. Plain Java compilation is used only when no build is found; an invalid explicit build selection produces an error.
+
+### Gradle run configurations
+
+HotSwap inherits the selected JavaExec task’s application arguments, JVM arguments and argument providers, system properties, working directory, environment, runtime classpath, and Java executable/toolchain. Task dependencies and `doFirst` preparation execute before capture, so arguments calculated from generated files are included. The companion then launches that configuration with the HotSwap agent and keeps automatic reloads active.
+
+If a build has several run tasks, select one in your Zed debug scenario:
+
+```json
+{
+  "label": "Client HotSwap",
+  "adapter": "Java HotSwap",
+  "request": "launch",
+  "cwd": "$ZED_WORKTREE_ROOT",
+  "gradleRunTask": ":runClient"
+}
+```
+
+Use the task path listed in the selection error or Inspect output. The CLI equivalent is `java-hotswap run --project /path/to/project --gradle-run-task :runClient`. Subproject paths such as `:app:run` are supported. HotSwap does not invent required arguments or credentials. Without a usable JavaExec configuration, launch stops with an explanation of what is missing.
+
+Additional HotSwap `args` and `jvmArgs` are appended to the inherited arguments. An explicit `javaHome` overrides the task’s Java launcher; leave it unset to preserve the toolchain. A `mainClass` override must match the selected task.
+
+Capture supports standard classpath JavaExec tasks. Custom JavaExec subclasses, Exec/script launchers, executable JARs and module-path launches are outside this support. Task `doLast` actions and finalizers are not replayed when the companion-owned JVM stops; choose a task that does not require those cleanup actions. Launch values use a temporary private metadata file, removed after capture, and are excluded from persistent discovery metadata.
 
 ### Gradle and Java compatibility
 
@@ -190,19 +213,20 @@ Create `.java-hotswap.json` in the workspace (`cwd`) only when needed:
 | Option | Use |
 |---|---|
 | `projectRoot` | Gradle/Maven build root, absolute or relative to the workspace. Required when several independent builds are discovered. |
-| `mainClass` | Fully qualified entry point. |
+| `mainClass` | Fully qualified entry point for Maven/plain Java; must match a selected Gradle task. |
+| `gradleRunTask` | Gradle JavaExec task path, e.g. `:app:run`; required when several tasks exist. |
 | `module` | Gradle project path or absolute Maven module directory; Inspect shows the exact value. |
 | `javaHome` | Select a JDK; relative paths resolve from the workspace. Otherwise uses Gradle's application launcher or `JAVA_HOME`/PATH. |
 | `gradleJavaHome` | Explicit compatible Gradle runtime JDK; independent of the application's `javaHome` and toolchains. Relative paths resolve from the workspace. |
 | `gradleVersion` | Verified stable version for custom/unversioned Gradle distributions or launchers; checked against actual wrapper output. |
 | `jvmArgs` | Additional JVM arguments, such as `-XstartOnFirstThread` for a macOS application that needs it. |
-| `args` | Application arguments. |
+| `args` | Application arguments; appended to inherited Gradle task arguments. |
 | `buildArgs` | Build-tool options, such as Maven profiles. |
 | `classpath` | Additional directories/JARs for plain Java. |
 | `debounceMs` | Save debounce interval; defaults to 250 ms. |
 | `jdwpPort` | Optional loopback debugger port for Java attach. |
 
-For multi-module overrides, set both `module` and `mainClass`. Gradle application default JVM arguments and additional `run.jvmArgs` are inherited (duplicate identical arguments are removed); the LWJGL example already declares the macOS first-thread argument.
+For Gradle, select `gradleRunTask` to choose a module and launch configuration. Maven/plain entry overrides can use `module` and `mainClass`. The LWJGL example declares the macOS first-thread argument in its Gradle application configuration.
 
 Unknown fields fail explicitly. Stop and start the session after changing build configuration so the project is rediscovered.
 

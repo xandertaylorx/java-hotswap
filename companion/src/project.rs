@@ -29,6 +29,26 @@ pub struct Module {
     pub jvm_args: Vec<String>,
     #[serde(default)]
     pub java: Option<String>,
+    #[serde(default)]
+    pub run_tasks: Vec<RunTask>,
+}
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTask {
+    pub name: String,
+    pub main_class: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Launch {
+    pub task: String,
+    pub main_class: String,
+    pub java: String,
+    pub classpath: Vec<PathBuf>,
+    pub jvm_args: Vec<String>,
+    pub args: Vec<String>,
+    pub working_directory: PathBuf,
+    pub environment: BTreeMap<String, String>,
 }
 #[derive(Debug)]
 pub struct Project {
@@ -267,6 +287,7 @@ impl Project {
                 main_class: None,
                 jvm_args: vec![],
                 java: None,
+                run_tasks: vec![],
             });
         }
         if project.modules.is_empty() {
@@ -337,6 +358,7 @@ impl Project {
             main_class: None,
             jvm_args: vec![],
             java: None,
+            run_tasks: vec![],
         });
         if let Some(modules) = child(p, "modules") {
             for module in modules.children().filter(|n| n.has_tag_name("module")) {
@@ -412,6 +434,18 @@ impl Project {
         execute(&mut cmd, emit, stop)
     }
     pub fn entry(&self, config: &Config) -> Result<(String, &Module), String> {
+        if self.kind == "gradle" {
+            let (task, module) = self.run_task(config)?;
+            return Ok((
+                task.main_class.clone().unwrap_or_else(|| {
+                    format!(
+                        "{} (mainClass resolved during launch preparation)",
+                        task.name
+                    )
+                }),
+                module,
+            ));
+        }
         let modules: Vec<_> = self
             .modules
             .iter()
@@ -470,6 +504,73 @@ impl Project {
             ))
         }
     }
+    pub fn run_task(&self, config: &Config) -> Result<(&RunTask, &Module), String> {
+        let tasks: Vec<_> = self
+            .modules
+            .iter()
+            .filter(|m| config.module.as_ref().is_none_or(|name| name == &m.name))
+            .flat_map(|m| m.run_tasks.iter().map(move |t| (t, m)))
+            .filter(|(t, _)| {
+                config.gradle_run_task.as_ref().is_none_or(|name| {
+                    name == &t.name || t.name.rsplit(':').next() == Some(name.as_str())
+                })
+            })
+            .collect();
+        match tasks.as_slice() {
+            [selected] => Ok(*selected),
+            [] => Err("No usable Gradle JavaExec launch task found (or gradleRunTask/module did not match). Configure a JavaExec task or the application plugin with mainClass, runtime classpath and required application arguments, then select gradleRunTask. HotSwap will not guess required application arguments or launch a source main directly.".into()),
+            _ => Err(format!("Multiple Gradle JavaExec launch tasks found: {}. Select gradleRunTask in the Zed launch scenario/.java-hotswap.json or --gradle-run-task on the CLI.", tasks.iter().map(|(t, _)| t.name.as_str()).collect::<Vec<_>>().join(", "))),
+        }
+    }
+    pub fn prepare_launch(
+        &self,
+        config: &Config,
+        state: &Path,
+        emit: &Emit,
+        stop: &AtomicBool,
+    ) -> Result<Launch, String> {
+        let (task, _) = self.run_task(config)?;
+        let path = state.join("launch.json");
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        // Remove stale data before recreating a private, ephemeral launch file.
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+        drop(options.open(&path).map_err(|e| e.to_string())?);
+        let result = (|| {
+            let mut command = self.command(config);
+            command
+                .args(["--console=plain", "--no-configuration-cache", "-I"])
+                .arg(state.join("init.gradle"))
+                .arg(format!("-DjavaHotSwap.runTask={}", task.name))
+                .arg(format!("-DjavaHotSwap.launch={}", path.display()))
+                .arg(&task.name);
+            execute(&mut command, emit, stop)?;
+            let launch: Launch = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+                .map_err(|_| "Selected Gradle run task did not produce a usable launch configuration (it may be disabled/skipped)".to_string())?;
+            if config
+                .main_class
+                .as_ref()
+                .is_some_and(|main| main != &launch.main_class)
+            {
+                return Err("mainClass conflicts with the selected Gradle run task; select the matching gradleRunTask instead".into());
+            }
+            if launch.classpath.is_empty() {
+                return Err("Selected Gradle JavaExec task has no runtime classpath; configure the task's classpath".into());
+            }
+            Ok(launch)
+        })();
+        let cleanup = fs::remove_file(&path)
+            .map_err(|e| format!("Cannot remove private Gradle launch metadata: {e}"));
+        cleanup?;
+        result
+    }
 }
 fn strip_comments(s: &str) -> String {
     Regex::new(r#"(?s)/\*.*?\*/|//[^\n]*|""".*?"""|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'"#)
@@ -526,6 +627,37 @@ pub fn snapshot(roots: &[PathBuf]) -> Result<BTreeMap<PathBuf, u64>, String> {
 mod discovery_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn gradle_run_task_selection_does_not_guess_from_source_main() {
+        let module: Module = serde_json::from_value(serde_json::json!({
+            "name":":app", "sources":[], "classes":[], "classpath":[],
+            "runTasks":[{"name":":app:runClient", "mainClass":"demo.Main"},
+                        {"name":":app:runServer", "mainClass":"demo.Main"}]
+        }))
+        .unwrap();
+        let mut project = Project {
+            root: ".".into(),
+            kind: "gradle".into(),
+            modules: vec![module],
+            tool: "gradle".into(),
+            gradle_runtime: None,
+        };
+        assert!(project
+            .run_task(&Config::default())
+            .unwrap_err()
+            .contains("Multiple Gradle JavaExec"));
+        let config = Config {
+            gradle_run_task: Some("runClient".into()),
+            ..Config::default()
+        };
+        assert_eq!(project.run_task(&config).unwrap().0.name, ":app:runClient");
+        project.modules[0].run_tasks.clear();
+        assert!(project
+            .run_task(&config)
+            .unwrap_err()
+            .contains("No usable Gradle JavaExec"));
+    }
 
     struct Workspace(PathBuf);
     impl Workspace {

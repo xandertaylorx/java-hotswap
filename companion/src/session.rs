@@ -90,6 +90,16 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         .collect::<Vec<_>>();
     let mut seen = snapshot(&sources)?;
     project.compile(config, emit, stop)?;
+    let launch = if project.kind == "gradle" {
+        let launch = project.prepare_launch(config, state, emit, stop)?;
+        status(
+            emit,
+            &format!("LAUNCH TASK {} / {}", launch.task, launch.main_class),
+        );
+        Some(launch)
+    } else {
+        None
+    };
     fs::write(
         state.join("agent.jar"),
         include_bytes!(concat!(env!("OUT_DIR"), "/java-hotswap-agent.jar")),
@@ -117,6 +127,8 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
     fs::write(state.join("agent.conf"), agent_config).map_err(|e| e.to_string())?;
     let java = if config.java_home.is_some() {
         jdk_tool(config.java_home.as_deref(), "java")
+    } else if let Some(launch) = &launch {
+        launch.java.clone().into()
     } else {
         module
             .java
@@ -125,9 +137,22 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
             .unwrap_or_else(|| jdk_tool(None, "java"))
     };
     let mut cmd = Command::new(java);
-    cmd.current_dir(&project.root)
-        .args(&module.jvm_args)
-        .args(&config.jvm_args);
+    cmd.current_dir(
+        launch
+            .as_ref()
+            .map(|l| l.working_directory.as_path())
+            .unwrap_or(&project.root),
+    )
+    .args(
+        launch
+            .as_ref()
+            .map(|l| l.jvm_args.as_slice())
+            .unwrap_or(&module.jvm_args),
+    )
+    .args(&config.jvm_args);
+    if let Some(launch) = &launch {
+        cmd.env_clear().envs(&launch.environment);
+    }
     if let Some(port) = config.jdwp_port {
         if port == 0 {
             return Err("jdwpPort must be between 1 and 65535".into());
@@ -141,11 +166,22 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         state.join("agent.jar").display(),
         state.join("agent.conf").display()
     ));
-    let cp = module.classpath.clone();
+    let cp = launch
+        .as_ref()
+        .map(|l| &l.classpath)
+        .unwrap_or(&module.classpath);
     cmd.arg("-cp")
         .arg(std::env::join_paths(cp).map_err(|e| e.to_string())?)
-        .arg(main)
-        .args(&config.args);
+        .arg(
+            launch
+                .as_ref()
+                .map(|l| l.main_class.as_str())
+                .unwrap_or(&main),
+        );
+    if let Some(launch) = &launch {
+        cmd.args(&launch.args);
+    }
+    cmd.args(&config.args);
     let mut app = Managed::spawn(&mut cmd, emit)?;
     status(
         emit,

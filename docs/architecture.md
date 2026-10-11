@@ -7,10 +7,16 @@ The WASM extension is only the supported Zed adapter registration/lookup layer. 
 - `companion/src/gradle_runtime.rs`, `jdks.rs`, `properties.rs`: wrapper/version preflight, Gradle runtime compatibility, platform JDK discovery, Java properties parsing.
 - `companion/src/session.rs`: exclusive project session lock, debounce, serial build scheduling, JVM lifecycle, build commits.
 
-Workspace discovery selects build roots before source scanning. It walks subdirectories until a Gradle or Maven root is found, then treats that build's module tree as owned by the build tool. A single root is automatic; multiple independent roots require `projectRoot` (launch/config) or `--project-root` (CLI). Explicit invalid selections, conflicting build markers, unreadable traversal paths and failed builds are errors, never triggers for plain javac fallback. Session state and control files remain under `cwd/.java-hotswap`; the build tool and JVM run from the selected build root. Gradle supplies actual SourceSet output/runtime paths, application entry point, application/default and run-task JVM arguments, and the run-task Java launcher.
+Workspace discovery selects build roots before source scanning. It walks subdirectories until a Gradle or Maven root is found, then treats that build's module tree as owned by the build tool. A single root is automatic; multiple independent roots require `projectRoot` (launch/config) or `--project-root` (CLI). Explicit invalid selections, conflicting build markers, unreadable traversal paths and failed builds are errors, never triggers for plain javac fallback. Session state and control files remain under `cwd/.java-hotswap`; the build tool runs from the selected build root. Gradle supplies actual SourceSet output/runtime paths and JavaExec task descriptors. The JVM uses the selected task’s working directory.
 - `companion/src/process.rs`: stdout/stderr forwarding, cancellation, owned process groups.
 - `companion/src/dap.rs`: framed JSON requests, output/events, terminate and disconnect.
 - `agent/src/dev/javahotswap/Agent.java`: hashes, project-origin checks, class redefinition and error reporting.
+
+## Gradle launch capture
+
+After compilation, a temporary init script runs the selected JavaExec task’s dependencies and preceding preparation actions. A standard JavaExec probe identifies the built-in execution action through public Task.actions; capture replaces only that action. Unexpected action layouts and subclasses fail explicitly. Capture stops the remaining task actions and removes its finalizers rather than running an uninstrumented JVM or premature cleanup.
+
+The capture includes late-bound application/JVM argument providers, structured fork options and system properties, the Java launcher, runtime classpath, working directory and environment. Project JARs map to class outputs for instrumentation. The companion appends explicit user overrides and the embedded instrumentation agent. An ephemeral launch.json is created with mode 0600 on Unix (inherited directory ACLs on Windows), parsed without logging its contents, then deleted on success or failure. Persistent gradle.json contains task descriptors, not arguments/environment/property values. Post-actions/finalizers are not replayed at shutdown.
 
 ## Build/reload transaction
 

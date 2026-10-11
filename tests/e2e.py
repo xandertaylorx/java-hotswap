@@ -48,7 +48,7 @@ class HotSwap(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='hotswap with spaces ') as tmp:
             root = Path(tmp) / fixture
             destination = root / 'java' if nested else root
-            shutil.copytree(REPO / 'examples' / fixture, destination, ignore=shutil.ignore_patterns('build', 'build.nosync', 'target', '.gradle', '.java-hotswap'))
+            shutil.copytree(REPO / 'examples' / fixture, destination, ignore=shutil.ignore_patterns('build', 'build.nosync', 'target', '.gradle', '.java-hotswap', 'work directory', 'extra-runtime'))
             before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file() and p.suffix in ('.xml', '.gradle')}
             env = os.environ.copy()
             if fixture == 'nested-gradle':
@@ -64,15 +64,14 @@ class HotSwap(unittest.TestCase):
                     self.assertTrue(all('build.nosync' in p for p in model['classes']))
                     self.assertTrue(any('gson-2.13.2.jar' in p for p in model['classpath']))
                     self.assertTrue(any('lwjgl-3.3.6.jar' in p for p in model['classpath']))
-                    self.assertIn('--enable-native-access=ALL-UNNAMED', model['jvmArgs'])
-                    self.assertIn('-Dhotswap.run=true', model['jvmArgs'])
                     if platform.system() == 'Darwin':
-                        self.assertIn('-XstartOnFirstThread', model['jvmArgs'])
                         # The macOS Java launcher consumes this flag before JVM
                         # startup, so RuntimeMXBean input arguments omit it.
                         pid = re.search(r'pid=(\d+)', original)[1]
                         command = subprocess.check_output(['ps', '-p', pid, '-o', 'command='], text=True)
                         self.assertIn('-XstartOnFirstThread', command)
+                        self.assertIn('--enable-native-access=ALL-UNNAMED', command)
+                        self.assertIn('-Dhotswap.run=true', command)
                     self.assertTrue((root / 'java/build.nosync/classes/java/main/blockland/Main.class').is_file())
                     self.assertFalse((root / '.java-hotswap/classes').exists())
                     session.wait(r'BUILD TOOL .*java/gradlew')
@@ -113,6 +112,56 @@ class HotSwap(unittest.TestCase):
     def test_maven_multi(self): self.exercise('maven-multi')
     def test_nested_gradle(self): self.exercise('nested-gradle')
     def test_nested_maven(self): self.exercise('maven', nested=True)
+    def test_javaexec(self): self.exercise('javaexec')
+
+    def test_javaexec_task_selection_and_sensitive_values(self):
+        with tempfile.TemporaryDirectory(prefix='hotswap JavaExec ') as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/javaexec', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build', 'work directory', 'extra-runtime', '.gradle', '.java-hotswap'))
+            build = root / 'build.gradle'
+            build.write_text(build.read_text()+"\ntasks.register('runOther', JavaExec) { mainClass = 'demo.Main'; classpath = sourceSets.main.runtimeClasspath }\n")
+            result = subprocess.run([str(BINARY), 'run', '--project', tmp], capture_output=True, text=True, timeout=180)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Multiple Gradle JavaExec launch tasks', result.stderr)
+            self.assertIn(':runConfigured', result.stderr)
+            self.assertIn(':runOther', result.stderr)
+            (root / '.java-hotswap.json').write_text(json.dumps({'gradleRunTask':':runConfigured'}))
+            env = os.environ.copy()
+            sensitive = 'fixture-private-' + os.urandom(12).hex()
+            env['HOTSWAP_FIXTURE_SECRET'] = sensitive
+            session = Session(root, env)
+            try:
+                session.wait('launch-settings-ok')
+                session.wait(r'radius=0 pid=')
+                self.assertFalse((root / '.java-hotswap/launch.json').exists())
+                self.assertNotIn(sensitive, ''.join(session.lines))
+                for path in (root / '.java-hotswap').rglob('*'):
+                    if path.is_file(): self.assertNotIn(sensitive.encode(), path.read_bytes(), str(path))
+            finally: session.close()
+
+    def test_missing_gradle_run_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/gradle', root, dirs_exist_ok=True)
+            (root / 'build.gradle').write_text("plugins { id 'java' }\n")
+            result = subprocess.run([str(BINARY), 'run', '--project', tmp], capture_output=True, text=True, timeout=180)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('No usable Gradle JavaExec launch task', result.stderr)
+            self.assertNotIn('RUNNING pid=', result.stderr)
+
+    def test_application_plugin_required_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build', '.gradle', '.java-hotswap'))
+            build = root / 'build.gradle'
+            build.write_text(build.read_text()+"\ntasks.named('run') { args 'required-app-argument' }\n")
+            source = root / 'src/main/java/demo/Main.java'
+            source.write_text(source.read_text().replace('while (true)', 'if (args.length != 1 || !args[0].equals("required-app-argument")) throw new IllegalStateException("Missing run args"); while (true)'))
+            session = Session(root)
+            try: session.wait(r'radius=0 pid=')
+            finally: session.close()
 
     def gradle_jdk_case(self, version, toolchain, runtime):
         def home(major):
@@ -314,10 +363,11 @@ class Dap(unittest.TestCase):
     def test_signal_shutdown(self): self.launch_and_shutdown(True)
     def test_nested_gradle_launch_and_reload(self): self.launch_and_shutdown(False, 'nested-gradle')
     def test_multiple_projects_launch_selection(self): self.launch_and_shutdown(False, 'nested-gradle', selected=True)
+    def test_custom_javaexec_launch(self): self.launch_and_shutdown(False, 'javaexec')
     def launch_and_shutdown(self, signal, fixture='plain', selected=False):
         with tempfile.TemporaryDirectory(prefix='hotswap dap ') as tmp:
             root = Path(tmp)
-            shutil.copytree(REPO / 'examples' / fixture, root, dirs_exist_ok=True, ignore=shutil.ignore_patterns('build.nosync', '.gradle', '.java-hotswap'))
+            shutil.copytree(REPO / 'examples' / fixture, root, dirs_exist_ok=True, ignore=shutil.ignore_patterns('build', 'build.nosync', '.gradle', '.java-hotswap', 'work directory', 'extra-runtime'))
             if selected:
                 (root / 'other').mkdir()
                 (root / 'other/settings.gradle').write_text("throw new GradleException('UNSELECTED_BUILD_MUST_NOT_EXECUTE')")

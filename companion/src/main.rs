@@ -27,6 +27,7 @@ pub struct Config {
     pub java_home: Option<PathBuf>,
     pub gradle_java_home: Option<PathBuf>,
     pub gradle_version: Option<String>,
+    pub gradle_run_task: Option<String>,
     pub jvm_args: Vec<String>,
     pub args: Vec<String>,
     pub classpath: Vec<PathBuf>,
@@ -44,6 +45,7 @@ impl Default for Config {
             java_home: None,
             gradle_java_home: None,
             gradle_version: None,
+            gradle_run_task: None,
             jvm_args: vec![],
             args: vec![],
             classpath: vec![],
@@ -92,6 +94,8 @@ enum Action {
         #[arg(long)]
         project_root: Option<PathBuf>,
         #[arg(long)]
+        gradle_run_task: Option<String>,
+        #[arg(long)]
         main: Option<String>,
     },
     Stop {
@@ -139,11 +143,15 @@ fn main_result() -> Result<(), String> {
         Action::Run {
             project,
             project_root,
+            gradle_run_task,
             main,
         } => {
             let mut config = Config::load(project)?;
             if project_root.is_some() {
                 config.project_root = project_root;
+            }
+            if gradle_run_task.is_some() {
+                config.gradle_run_task = gradle_run_task;
             }
             if main.is_some() {
                 config.main_class = main;

@@ -4,6 +4,20 @@ Local verification on 2026-10-10, macOS Apple Silicon. These are executed result
 
 Toolchains: Rust 1.97.1; zed_extension_api 0.7.0; Temurin Java 17.0.20.1, 21.0.10, 25.0.2; Gradle 9.1.0; Maven 3.9.11. The embedded agent's classfile major version is 61 (Java 17).
 
+## Gradle JavaExec launch inheritance — 2026-10-11
+
+Verified on macOS Apple Silicon with the rebuilt release companion:
+
+- Full release suite: 27 passed, one graphical test skipped (28 total). The graphical LWJGL lifecycle/reload case passed separately, giving 28 distinct passing integration cases.
+- Custom JavaExec launch verified required arguments set in doFirst, task dependencies, application/JVM argument providers, system properties, environment, a working directory containing spaces, heap limits, assertions, extra runtime resources and Gson resolution. The fixture deliberately fails if post-actions or its finalizer run during capture.
+- Both custom JavaExec CLI and DAP launches passed. Method edits reloaded in the same JVM; compiler failures and rejected structural edits left that JVM running. Existing application-plugin, nested-build and multi-module cases passed.
+- Multiple task configurations required selection; an explicit gradleRunTask selected the intended launch. A Java-only build with a source main but no JavaExec task produced an actionable error instead of guessing arguments. A separate application-plugin fixture required inherited application arguments.
+- Gradle 8.10 with default Java 25 selected Java 21 and launched successfully. Gradle 9.1/Java 25 and the separate Java 21 application toolchain case still passed.
+- Random credential-shaped fixture values were inherited by the JVM, absent from captured output and persistent HotSwap files, and the private launch metadata was removed after capture.
+- Eleven Rust tests passed; formatting, clippy with warnings denied, native release and wasm32-wasip2 release builds passed. The installed local companion was updated.
+
+Existing Minecraft build files were not modified. Native Windows and live Zed UI execution remain unverified; Zed's DAP launch protocol was tested with real Gradle processes.
+
 ## Gradle runtime compatibility fix — 2026-10-11
 
 Verified locally on macOS Apple Silicon with the rebuilt release companion and Java 25 as the default:

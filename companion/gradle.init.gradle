@@ -1,35 +1,87 @@
 import groovy.json.JsonOutput
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.StopExecutionException
+import org.gradle.process.JavaForkOptions
+
 // Temporary init script; the user's build files are never edited.
 gradle.projectsEvaluated {
     def root = gradle.rootProject
+    def outputs = [:]
+    root.allprojects.each { p ->
+        def sourceSets = p.extensions.findByName('sourceSets')
+        def jar = p.tasks.findByName('jar')
+        if (sourceSets != null && jar != null) outputs[jar.archiveFile.get().asFile.absolutePath] = sourceSets.main.output.files.collect { it.absolutePath }
+    }
+    def mappedClasspath = { paths -> paths.collectMany { path -> outputs.containsKey(path) ? outputs[path] : [path] }.unique() }
     root.tasks.register('__javaHotSwapMetadata') {
         doLast {
             def models = root.allprojects.findAll { it.extensions.findByName('sourceSets') != null }.collect { p ->
                 def main = p.sourceSets.findByName('main')
                 if (main == null) return null
                 def app = p.extensions.findByName('application')
-                // Realize the application launch task so task-level JVM arguments
-                // (including withType(JavaExec) configuration) are preserved too.
                 def run = app == null ? null : p.tasks.named('run').get()
                 def launcher = p.extensions.findByName('java').toolchain
                 def javaExecutable = (run == null ? p.javaToolchains.launcherFor(launcher).get() : run.javaLauncher.get()).executablePath.asFile.absolutePath
                 [name: p.path, sources: main.java.srcDirs.collect { it.absolutePath },
                  classes: main.output.classesDirs.files.collect { it.absolutePath },
-                 classpath: main.runtimeClasspath.files.collect { it.absolutePath },
+                 classpath: mappedClasspath(main.runtimeClasspath.files.collect { it.absolutePath }),
                  compileTasks: [p.tasks.getByName(main.classesTaskName).path],
                  mainClass: app == null ? null : app.mainClass.orNull,
-                 jvmArgs: run == null ? [] : (app.applicationDefaultJvmArgs.toList() + run.jvmArgs.toList()).unique(), java: javaExecutable]
+                 // Launch values can contain credentials: keep them exclusively
+                 // in the private, ephemeral capture file, never discovery metadata.
+                 jvmArgs: [], java: javaExecutable,
+                 runTasks: p.tasks.withType(JavaExec).findAll { !it.name.startsWith('__javaHotSwap') }.collect { t ->
+                     [name: t.path, mainClass: t.mainClass.orNull]
+                 }]
             }.findAll { it != null }
-            // Gradle resolves project dependencies as JARs by default. Launch from the
-            // corresponding output directories so dependency classes can be redefined.
-            def outputs = [:]
-            root.allprojects.each { p ->
-                def sourceSets = p.extensions.findByName('sourceSets')
-                def jar = p.tasks.findByName('jar')
-                if (sourceSets != null && jar != null) outputs[jar.archiveFile.get().asFile.absolutePath] = sourceSets.main.output.files.collect { it.absolutePath }
-            }
-            models.each { model -> model.classpath = model.classpath.collectMany { path -> outputs.containsKey(path) ? outputs[path] : [path] }.unique() }
             new File(System.getProperty('javaHotSwap.metadata')).text = JsonOutput.toJson(models)
         }
+    }
+    def selected = System.getProperty('javaHotSwap.runTask')
+    if (selected != null) {
+        def task = root.tasks.getByPath(selected)
+        if (!(task instanceof JavaExec)) throw new GradleException("Selected HotSwap run task is not a JavaExec: ${selected}")
+        // Use a standard JavaExec probe to identify the built-in exec action via
+        // public Task.actions, without assuming an internal action class name.
+        def probe = root.tasks.create('__javaHotSwapExecProbe', JavaExec)
+        if (task.class != probe.class || probe.actions.size() != 1) throw new GradleException("HotSwap cannot safely capture custom JavaExec subclasses: ${selected}. Use a standard JavaExec launch task.")
+        def execActionType = probe.actions[0].class
+        def actions = task.actions.toList()
+        def indexes = (0..<actions.size()).findAll { actions[it].class == execActionType }
+        if (indexes.size() != 1) throw new GradleException("HotSwap could not identify a single JavaExec launch action for ${selected}; refusing to start an uninstrumented process")
+        actions[indexes[0]] = { running ->
+            def mainClass = running.mainClass.orNull
+            if (!mainClass) throw new GradleException("HotSwap run task ${selected} is missing mainClass; configure an existing classpath JavaExec launch")
+            if (running.mainModule.orNull || (running.modularity.inferModulePath.get() && running.classpath.files.any { new File(it, 'module-info.class').exists() })) throw new GradleException("HotSwap currently supports classpath JavaExec launches; module-path launch ${selected} is unsupported")
+            def executable = running.javaLauncher.get().executablePath.asFile
+            if (running.executable != null && running.project.file(running.executable).canonicalFile != executable.canonicalFile) throw new GradleException("JavaExec executable disagrees with its javaLauncher for ${selected}")
+            // Preserve structured fork settings (heap, assertions, debug, system
+            // properties), then explicit JVM arguments, then argument providers.
+            def providers = running.jvmArgumentProviders.toList()
+            def base
+            try {
+                running.jvmArgumentProviders.clear()
+                base = running.allJvmArgs.toList()
+            } finally { running.jvmArgumentProviders.addAll(providers) }
+            def app = running.project.extensions.findByName('application')
+            def defaults = app != null && running.name == 'run' ? app.applicationDefaultJvmArgs.toList() : []
+            probe.setAllJvmArgs(defaults + base + (running.jvmArgs ?: []) + providers.collectMany { it.asArguments().toList() })
+            def args = (running.args ?: []).toList() + running.argumentProviders.collectMany { it.asArguments().toList() }
+            def model = [task: running.path, mainClass: mainClass,
+                         java: executable.absolutePath,
+                         classpath: mappedClasspath(running.classpath.files.collect { it.absolutePath }),
+                         jvmArgs: probe.allJvmArgs, args: args.collect { it.toString() },
+                         workingDirectory: running.workingDir.absolutePath,
+                         environment: running.environment.collectEntries { k, v -> [(k.toString()): v.toString()] },
+                         systemProperties: probe.systemProperties.collectEntries { k, v -> [(k.toString()): v.toString()] }]
+            new File(System.getProperty('javaHotSwap.launch')).text = JsonOutput.toJson(model)
+            // Dependencies and doFirst preparation already ran. Skip actual exec
+            // and doLast actions: the companion owns the instrumented JVM lifetime.
+            throw new StopExecutionException('HotSwap captured launch configuration')
+        } as org.gradle.api.Action
+        task.setActions(actions)
+        // Launch cleanup belongs after the JVM lifetime, not after capture.
+        // The companion does not replay task post-actions/finalizers on shutdown.
+        task.setFinalizedBy([])
     }
 }

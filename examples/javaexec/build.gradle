@@ -1,0 +1,32 @@
+plugins { id 'java' }
+repositories { mavenCentral() }
+dependencies { implementation 'com.google.code.gson:gson:2.13.2' }
+tasks.register('prepareLaunch') {
+    doLast {
+        file('work directory').mkdirs()
+        file('work directory/prepared.txt').text = 'ready'
+        file('extra-runtime').mkdirs()
+        file('extra-runtime/task-resource.txt').text = 'custom-classpath'
+    }
+}
+tasks.register('runConfigured', JavaExec) {
+    dependsOn classes, prepareLaunch
+    mainClass = 'demo.Main'
+    classpath = sourceSets.main.runtimeClasspath + files('extra-runtime')
+    workingDir = file('work directory')
+    environment 'FIXTURE_ENV', 'inherited'
+    environment 'FIXTURE_SECRET', providers.environmentVariable('HOTSWAP_FIXTURE_SECRET').getOrElse('fixture-only')
+    systemProperty 'fixture.system', 'inherited'
+    jvmArgs '-Dfixture.jvm=inherited'
+    maxHeapSize = '96m'
+    enableAssertions = true
+    argumentProviders.add({ -> ['provider-argument'] } as org.gradle.process.CommandLineArgumentProvider)
+    jvmArgumentProviders.add({ -> ['-Dfixture.provider=inherited'] } as org.gradle.process.CommandLineArgumentProvider)
+    doFirst {
+        if (!file('work directory/prepared.txt').exists()) throw new GradleException('Launch dependency did not run')
+        args = ['required-argument', environment['FIXTURE_SECRET']]
+    }
+    doLast { throw new GradleException('Post-launch actions must not run during capture') }
+}
+tasks.register('launchCleanup') { doLast { throw new GradleException('Launch finalizers must not run during capture') } }
+tasks.named('runConfigured') { finalizedBy tasks.named('launchCleanup') }

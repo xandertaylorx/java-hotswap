@@ -1,0 +1,9 @@
+[
+  {
+    "label": "Configured JavaExec HotSwap",
+    "adapter": "Java HotSwap",
+    "request": "launch",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "gradleRunTask": ":runConfigured"
+  }
+]
