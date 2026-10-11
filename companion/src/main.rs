@@ -4,6 +4,7 @@ mod jdks;
 mod process;
 mod project;
 mod properties;
+mod runtime;
 mod session;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};

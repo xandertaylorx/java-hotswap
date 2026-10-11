@@ -55,6 +55,7 @@ After reload: radius=10 pid=4242
 | **Compatible class reloads** | Reloads method bodies and logic using `Instrumentation.redefineClasses`. |
 | **Failure recovery** | Compilation errors, rejected structural changes, and reload-snapshot failures leave the application running. |
 | **Zed integration** | Run, Stop, Clear, and Inspect tasks, plus a native launch/output adapter. |
+| **Safe runtime classpath** | Runs from a private copy of classes, resources and dependency JARs. Failed or destructive builds cannot remove files from that classpath. |
 | **Build files preserved** | Uses temporary discovery/configuration files; no edits to your Gradle or Maven build files. |
 
 There is **no automatic restart**. Structural changes are reported explicitly so you can decide when to restart.
@@ -127,6 +128,7 @@ Each console example prints an explosion radius and its JVM PID, making reloads 
 | Example | What it demonstrates |
 |---|---|
 | [Plain Java](examples/plain) | A minimal project with no build tool. |
+| [Destructive Gradle build](examples/destructive-gradle) | Deletes class/resource/JAR outputs during compilation; verifies failure isolation and same-process recovery. |
 | [Custom JavaExec](examples/javaexec) | Required arguments, preparation tasks, environment, working directory, JVM settings, and extra runtime resources. |
 | [Gradle](examples/gradle) | Application detection and an external runtime dependency. |
 | [Maven](examples/maven) | POM discovery and an external runtime dependency. |
@@ -162,6 +164,14 @@ If the workspace contains several independent builds, discovery lists them and r
 The CLI equivalent is `java-hotswap run --project /path/to/workspace --project-root java`. You can also set `projectRoot` in the workspace's `.java-hotswap.json`. Gradle subprojects and Maven reactor modules belong to their enclosing build; use `module` to select an application within that build. To run separate sessions concurrently, set each scenario's `cwd` to its own build root so session locks and Stop/Clear controls are independent.
 
 Discovery skips symlinks and generated/cache directories such as `.git`, `.gradle`, `.java-hotswap`, `build`, `build.nosync`, `target`, and `node_modules`. Use an explicit `projectRoot` for a build in an excluded directory. Plain Java compilation is used only when no build is found; an invalid explicit build selection produces an error.
+
+### Compilation failures and runtime isolation
+
+After the initial build and run-task preparation succeed, HotSwap copies the resolved launch classpath into `.java-hotswap/runtime`. This includes class directories, resources and dependency JARs; the JVM and agent use those private paths. Gradle/Maven continue compiling through their normal task graphs into their normal outputs, separate from the running JVM’s classpath. Even a task that deletes those outputs cannot remove the runtime’s files.
+
+Only a successful build publishes an immutable reload generation. Failed compilation leaves the prior method definitions and runtime files intact. Runtime files are kept for the entire JVM lifetime and removed after it stops; reload-generation pruning never touches them. Startup needs enough disk space for a full classpath copy and stops if copying fails.
+
+The runtime copy preserves launch-time resources, dependency versions and class bytes. HotSwap redefines compatible **already loaded project classes** after successful builds. Classes first loaded later use their launch-time bytes; new classes, resource/dependency changes and changes to the launch configuration require a manual restart. Application files accessed through the working directory remain under the project’s control.
 
 ### Gradle run configurations
 

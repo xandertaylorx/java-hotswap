@@ -6,7 +6,7 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.util.*;
 
-/** Only project-owned output directories are eligible; a successful-build commit gates reloads. */
+/** Only private project runtime origins are eligible; a successful-build commit gates reloads. */
 public final class Agent {
     private final Instrumentation instrumentation;
     private final Path commit;
@@ -29,7 +29,7 @@ public final class Agent {
             Agent agent = new Agent(config, instrumentation);
             Thread watcher = new Thread(agent::watch, "java-hotswap-agent");
             watcher.setDaemon(true); watcher.start();
-            log("READY watching " + agent.roots.size() + " project output directories");
+            log("READY watching " + agent.roots.size() + " project runtime directories");
         } catch (Exception | LinkageError error) { log("ERROR agent startup: " + error); }
     }
     private void watch() {

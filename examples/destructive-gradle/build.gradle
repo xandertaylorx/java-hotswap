@@ -1,0 +1,37 @@
+plugins { id 'java' }
+repositories { mavenCentral() }
+dependencies { implementation 'com.google.code.gson:gson:2.13.2' }
+layout.buildDirectory = file('build.nosync')
+tasks.register('compileDependency', JavaCompile) {
+    source = fileTree('dependency-src') { include '**/*.java' }
+    classpath = files()
+    destinationDirectory = layout.buildDirectory.dir('dependency-classes')
+}
+tasks.register('dependencyJar', Jar) {
+    dependsOn tasks.named('compileDependency')
+    from tasks.named('compileDependency').flatMap { it.destinationDirectory }
+    archiveFileName = 'late-dependency.jar'
+    destinationDirectory = layout.buildDirectory.dir('runtime')
+}
+tasks.register('prepareSource') { doLast { println 'PREPARE_SOURCE' } }
+tasks.register('applyChanges') {
+    dependsOn tasks.named('prepareSource'), tasks.named('dependencyJar')
+    doLast {
+        if (file('destructive').exists()) {
+            delete sourceSets.main.output.classesDirs, sourceSets.main.output.resourcesDir,
+                tasks.named('dependencyJar').get().archiveFile.get().asFile
+            println 'BUILD_OUTPUTS_DELETED'
+            Thread.sleep(3000)
+        }
+    }
+}
+tasks.named('compileJava') { dependsOn tasks.named('applyChanges') }
+tasks.named('processResources') { dependsOn tasks.named('applyChanges') }
+tasks.register('runConfigured', JavaExec) {
+    dependsOn tasks.named('classes'), tasks.named('dependencyJar')
+    classpath = sourceSets.main.runtimeClasspath + files(tasks.named('dependencyJar').flatMap { it.archiveFile })
+    mainClass = 'demo.Main'
+    workingDir = projectDir
+    args 'required-argument'
+    systemProperty 'fixture.launch', 'inherited'
+}

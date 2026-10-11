@@ -1,6 +1,7 @@
 use crate::{
     process::{Emit, Managed},
     project::{jdk_tool, snapshot, Project},
+    runtime::RuntimeSnapshot,
     Config,
 };
 use fs2::FileExt;
@@ -108,10 +109,22 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
     let roots = project
         .modules
         .iter()
-        .flat_map(|m| m.classes.iter())
+        .flat_map(|m| m.classes.clone())
         .collect::<Vec<_>>();
+    let cp = launch
+        .as_ref()
+        .map(|l| &l.classpath)
+        .unwrap_or(&module.classpath);
+    // Build tasks may delete any output, even before reporting failure. The JVM
+    // must never load from those paths, including lazy classes/resources/JARs.
+    // Declared before `app`: its files are cleaned only after Managed stops Java.
+    let runtime = RuntimeSnapshot::create(state, cp, &roots, stop)?;
+    status(
+        emit,
+        "RUNTIME SNAPSHOT ready (build outputs isolated from JVM)",
+    );
     let mut agent_config = format!("{}\n", state.join("commit").display());
-    for root in roots {
+    for root in &runtime.roots {
         agent_config.push_str(&format!("{}\n", root.display()));
     }
     if agent_config.contains('\r')
@@ -166,12 +179,8 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         state.join("agent.jar").display(),
         state.join("agent.conf").display()
     ));
-    let cp = launch
-        .as_ref()
-        .map(|l| &l.classpath)
-        .unwrap_or(&module.classpath);
     cmd.arg("-cp")
-        .arg(std::env::join_paths(cp).map_err(|e| e.to_string())?)
+        .arg(std::env::join_paths(&runtime.classpath).map_err(|e| e.to_string())?)
         .arg(
             launch
                 .as_ref()

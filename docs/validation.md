@@ -4,6 +4,22 @@ Local verification on 2026-10-10, macOS Apple Silicon. These are executed result
 
 Toolchains: Rust 1.97.1; zed_extension_api 0.7.0; Temurin Java 17.0.20.1, 21.0.10, 25.0.2; Gradle 9.1.0; Maven 3.9.11. The embedded agent's classfile major version is 61 (Java 17).
 
+## Stable runtime classpath / destructive-build isolation — 2026-10-11
+
+Investigation found that successful reload generations were already immutable, but the application still launched from the original mutable build outputs. Read-only inspection of the Minecraft build showed `prepareSource` conditionally extracting sources, `applyChanges` running a script that edits Java sources, and `compileJava` depending on that preparation. No Minecraft build was run or modified for this investigation. Gradle 8.10's [incremental compile transaction](https://github.com/gradle/gradle/blob/v8.10.0/platforms/jvm/language-java/src/main/java/org/gradle/api/internal/tasks/compile/incremental/transaction/CompileTransaction.java) moves selected class/resource files out of compiler destinations before javac and may restore them after failure; even eventual rollback leaves an unsafe window for a JVM reading those paths.
+
+The original installed companion reproduced runtime resource loss while compiling the new destructive fixture. The fixed companion isolates the JVM's class directories, resources and dependency JARs in a private byte copy before launch. Build outputs remain separate and Gradle's task graph, dependency resolution and selected JavaExec configuration are preserved. Agent roots map to the private runtime origins; reload publication still requires successful compilation. Runtime snapshots are retained until JVM shutdown and are separate from prunable reload generations.
+
+Executed locally on macOS Apple Silicon with the rebuilt release:
+
+- The destructive fixture passed under Gradle 8.10 with Java 21 and Gradle 9.1 with Java 25. Its prepareSource/applyChanges pipeline deleted class output directories, resource output and a generated dependency JAR, paused before compileJava, and then failed on a duplicate method. Previously unloaded project classes, anonymous inner classes and JAR classes loaded during that window and after failure; resource reads continued.
+- A prior successful method reload stayed active after failure, the same JVM PID survived, the reload commit did not change on failure, and every runtime file remained byte-for-byte identical. Repairing the source while keeping destructive regeneration enabled successfully redefined the method in that same JVM.
+- Shutdown removed the runtime copy. Rust tests also verified independent copies after in-place file mutation/deletion, classpath order/origin mapping, cancellation cleanup, materialized symlinks and cycle rejection.
+- The full release suite ran 30 cases: 29 passed and the graphical case was skipped. The graphical LWJGL lifecycle/reload test passed separately, giving 30 distinct passing integration cases. Existing Gradle/Maven/plain, multi-module, JavaExec argument inheritance, nested build, DAP, cancellation and structural rejection/recovery cases passed.
+- Fourteen Rust tests, formatting, clippy with warnings denied, the native release build and wasm32-wasip2 release build passed. The local installed companion was replaced with this release.
+
+The Minecraft world itself and live Zed UI were not exercised. Classes first loaded later use launch-time bytes; newly added classes and resource/dependency changes require a restart. Files accessed directly through the working directory remain project-controlled. Native Windows remains unverified.
+
 ## Gradle JavaExec launch inheritance — 2026-10-11
 
 Verified on macOS Apple Silicon with the rebuilt release companion:

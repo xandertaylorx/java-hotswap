@@ -296,6 +296,70 @@ class HotSwap(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('JAVA_HOTSWAP_TEST_LWJGL') == '1', 'requires active graphical desktop')
     def test_lwjgl(self): self.exercise('lwjgl')
 
+    def test_destructive_gradle_failed_build_preserves_runtime(self):
+        self.destructive_gradle_case()
+
+    def test_destructive_gradle810_failed_build_preserves_runtime(self):
+        self.destructive_gradle_case('8.10')
+
+    def destructive_gradle_case(self, version=None):
+        with tempfile.TemporaryDirectory(prefix='hotswap destructive ') as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/destructive-gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build.nosync', '.gradle', '.java-hotswap'))
+            if version:
+                template = REPO / 'examples/nested-gradle/java'
+                shutil.copytree(template / 'gradle', root / 'gradle')
+                shutil.copy2(template / 'gradlew', root / 'gradlew')
+                shutil.copy2(template / 'gradlew.bat', root / 'gradlew.bat')
+                wrapper = root / 'gradle/wrapper/gradle-wrapper.properties'
+                wrapper.write_text(wrapper.read_text().replace('gradle-9.1.0-bin.zip', f'gradle-{version}-bin.zip'))
+            before = {p:p.read_bytes() for p in root.rglob('*') if p.is_file() and p.suffix in ('.gradle', '.properties', '.bat')}
+            session = Session(root)
+            try:
+                pid = re.search(r'pid=(\d+)', session.wait(r'radius=0 pid='))[1]
+                runtime = root / '.java-hotswap/runtime'
+                original = {p.relative_to(runtime):p.read_bytes() for p in runtime.rglob('*') if p.is_file()}
+                self.assertTrue(any(p.name == 'late-dependency.jar' for p in original))
+                self.assertTrue(any(p.name == 'Late1$1.class' for p in original))
+                roots = (root / '.java-hotswap/agent.conf').read_text().splitlines()[1:]
+                self.assertTrue(all(Path(p).is_relative_to(runtime.resolve()) for p in roots))
+                source = root / 'src/main/java/demo/Main.java'
+                text = source.read_text()
+                # First establish a last successful reload, then provoke a duplicate method.
+                offset = len(session.lines)
+                source.write_text(text.replace('return 0;', 'return 10;'))
+                session.wait(rf'radius=10 pid={pid}\b', offset)
+                commit = (root / '.java-hotswap/commit').read_bytes()
+                (root / 'destructive').touch()
+                offset = len(session.lines)
+                source.write_text(text.replace('static int radius() { return 0; }',
+                    'static int radius() { return 20; } static int radius() { return 30; }'))
+                session.wait('BUILD_OUTPUTS_DELETED', offset)
+                self.assertFalse((root / 'build.nosync/classes/java/main/demo/Late1.class').exists())
+                self.assertFalse((root / 'build.nosync/runtime/late-dependency.jar').exists())
+                # These classes, anonymous inner class, dependency JAR classes and
+                # resource have never been loaded; test the vulnerable build window.
+                (root / 'load-1').touch()
+                session.wait('lazy-1=class-1/jar-1', offset)
+                session.wait('COMPILE FAILED', offset)
+                self.assertEqual((root / '.java-hotswap/commit').read_bytes(), commit)
+                self.assertFalse(any('RELOADED ' in line for line in session.lines[offset:]))
+                (root / 'load-2').touch()
+                session.wait('lazy-2=class-2/jar-2', offset)
+                session.wait(rf'radius=10 pid={pid}\b', len(session.lines))
+                self.assertEqual(original, {p.relative_to(runtime):p.read_bytes() for p in runtime.rglob('*') if p.is_file()})
+                # A successful regeneration must still redefine the original stable origin.
+                offset = len(session.lines)
+                source.write_text(text.replace('return 0;', 'return 40;'))
+                session.wait('BUILD_OUTPUTS_DELETED', offset)
+                session.wait(rf'radius=40 pid={pid}\b', offset)
+                self.assertEqual(original, {p.relative_to(runtime):p.read_bytes() for p in runtime.rglob('*') if p.is_file()})
+                self.assertFalse(any('ClassNotFoundException' in line or 'NoClassDefFoundError' in line for line in session.lines))
+                for path, data in before.items(): self.assertEqual(path.read_bytes(), data)
+            finally: session.close()
+            self.assertFalse(runtime.exists())
+
     def test_snapshot_failure_recovery(self):
         with tempfile.TemporaryDirectory(prefix='hotswap failure ') as tmp:
             root = Path(tmp)
