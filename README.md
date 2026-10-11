@@ -28,7 +28,7 @@ Java HotSwap connects Zed to your project's compiler and a small Java instrument
 
 ## Install and use
 
-You need **Rust (rustup)** and **JDK 17+**. Install Zed's **Java** extension too.
+You need **Rust (rustup)** and **JDK 17+**. Install Zed's **Java** extension too. If **Java with Eclipse JDTLS** is also installed, uninstall that older extension so it does not override Java's main-file launch tasks.
 
 ```sh
 git clone https://github.com/xandertaylorx/java-hotswap.git
@@ -45,6 +45,14 @@ cargo build --locked --release --target wasm32-wasip2
 A plain project containing just `src/HotSwapTest.java` works automatically: **no Gradle, Maven or `.zed/debug.json` required**. Targets come from the Java extension's contextual main tasks, so open the main file to see its target. Packages are resolved from source; selecting another main file selects that entry point.
 
 Gradle launches still inherit the project's JavaExec/run configuration. If several run tasks exist, select `gradleRunTask` in `.java-hotswap.json` (for example `":runClient"`). Maven retains its normal dependency resolution. [More setup options ↓](#quick-start)
+
+### No HotSwap target in the Debug menu?
+
+1. Keep **Java** and **Java HotSwap** installed. Remove **Java with Eclipse JDTLS** if present; it can take precedence over Java and lacks the runnable tasks used for automatic target discovery.
+2. After updating this repository, reinstall the companion with `cargo install --locked --path companion`, then run **zed: rebuild dev extension** from the command palette, select Java HotSwap, and restart Zed. Building with Cargo alone does not refresh the dev extension already loaded by Zed.
+3. Open the Java file containing `public static void main(String[] args)`. Run **debugger: start** from the command palette (Cmd+Shift+P on macOS) and choose **Java HotSwap: Run YourClass**. Cmd+Shift+D opens the debug panel; it does not open the launch picker.
+
+A plain `src/HotSwapTest.java` project needs no `.zed/debug.json` file.
 
 ## See the idea
 
@@ -295,7 +303,7 @@ Add a scenario to your project's `.zed/debug.json` array:
 
 Choose **debugger: start**. Closing the session stops the application.
 
-This adapter manages launching, output, and stopping. It reports breakpoints as unverified; use the existing Java adapter for stepping and breakpoints. Automatic Java gutter scenario generation is not implemented, and live Zed UI testing remains outstanding.
+This adapter manages launching, output, and stopping. It reports breakpoints as unverified; use the existing Java adapter for stepping and breakpoints. Automatic HotSwap launch targets use the Java extension's contextual main-file tasks. Locator registration and real companion launches are tested; live Zed UI testing remains outstanding.
 
 </details>
 
