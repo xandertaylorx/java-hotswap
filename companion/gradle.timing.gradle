@@ -1,0 +1,50 @@
+import org.gradle.api.Plugin
+import org.gradle.api.Project
+import org.gradle.api.services.BuildService
+import org.gradle.api.services.BuildServiceParameters
+import org.gradle.build.event.BuildEventsListenerRegistry
+import org.gradle.tooling.events.OperationCompletionListener
+import org.gradle.tooling.events.FinishEvent
+import org.gradle.tooling.events.task.TaskFinishEvent
+import org.gradle.tooling.events.task.TaskSuccessResult
+import org.gradle.tooling.events.task.TaskFailureResult
+import org.gradle.tooling.events.task.TaskSkippedResult
+import javax.inject.Inject
+
+// Task completion events and a shared service work on configuration-cache hits.
+// Never attach legacy taskGraph/buildFinished listeners or mutate compiler options.
+abstract class HotSwapBuildTiming implements BuildService<BuildServiceParameters.None>, OperationCompletionListener, AutoCloseable {
+    long firstStart = Long.MAX_VALUE
+    long lastEnd = 0
+    long summedMillis = 0
+    int tasks = 0
+    int executed = 0
+    void onFinish(FinishEvent event) {
+        if (!(event instanceof TaskFinishEvent)) return
+        def result = event.result
+        long millis = Math.max(0L, result.endTime - result.startTime)
+        def outcome = result instanceof TaskFailureResult ? 'FAILED' :
+            result instanceof TaskSkippedResult ? 'SKIPPED' :
+            result instanceof TaskSuccessResult && result.fromCache ? 'FROM-CACHE' :
+            result instanceof TaskSuccessResult && result.upToDate ? 'UP-TO-DATE' : 'EXECUTED'
+        firstStart = Math.min(firstStart, result.startTime)
+        lastEnd = Math.max(lastEnd, result.endTime)
+        summedMillis += millis
+        tasks++
+        if (outcome == 'EXECUTED' || outcome == 'FAILED') executed++
+        println "[Java HotSwap] GRADLE TASK ${event.descriptor.taskPath} elapsed_ms=${millis} outcome=${outcome}"
+    }
+    void close() {
+        println "[Java HotSwap] GRADLE TASK SUMMARY tasks=${tasks} executed=${executed} task_window_ms=${tasks == 0 ? 0 : lastEnd - firstStart} task_sum_ms=${summedMillis} (parallel task times may overlap)"
+    }
+}
+abstract class HotSwapTimingPlugin implements Plugin<Project> {
+    @Inject abstract BuildEventsListenerRegistry getEventsListenerRegistry()
+    void apply(Project project) {
+        def service = project.gradle.sharedServices.registerIfAbsent('javaHotSwapBuildTiming', HotSwapBuildTiming) {}
+        eventsListenerRegistry.onTaskCompletion(service)
+    }
+}
+gradle.beforeProject { project ->
+    if (project == project.rootProject) project.pluginManager.apply(HotSwapTimingPlugin)
+}

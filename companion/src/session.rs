@@ -6,6 +6,7 @@ use crate::{
 };
 use fs2::FileExt;
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     path::Path,
     process::Command,
@@ -32,6 +33,23 @@ pub fn lock(state: &Path) -> Result<File, String> {
 }
 fn status(emit: &Emit, text: &str) {
     emit("stderr", &format!("[Java HotSwap] {text}\n"));
+}
+fn timed<T>(
+    emit: &Emit,
+    phase: &str,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let start = Instant::now();
+    let result = action();
+    status(
+        emit,
+        &format!(
+            "TIMING {phase} elapsed_ms={} result={}",
+            start.elapsed().as_millis(),
+            if result.is_ok() { "success" } else { "failed" }
+        ),
+    );
+    result
 }
 pub fn run(config: Config, stop: Arc<AtomicBool>, emit: Emit) -> Result<(), String> {
     let root = fs::canonicalize(&config.cwd).map_err(|e| e.to_string())?;
@@ -73,7 +91,9 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         emit,
         "DISCOVERING project (build scripts execute as with a normal build)",
     );
-    let project = Project::discover(config, state, emit, stop)?;
+    let project = timed(emit, "discovery", || {
+        Project::discover(config, state, emit, stop)
+    })?;
     status(
         emit,
         &format!(
@@ -89,10 +109,13 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         .iter()
         .flat_map(|m| m.sources.clone())
         .collect::<Vec<_>>();
-    let mut seen = snapshot(&sources)?;
+    let mut seen = timed(emit, "initial_source_scan", || snapshot(&sources))?;
+    status(emit, &format!("SOURCE WATCH files={}", seen.len()));
     project.compile(config, emit, stop)?;
     let launch = if project.kind == "gradle" {
-        let launch = project.prepare_launch(config, state, emit, stop)?;
+        let launch = timed(emit, "launch_preparation", || {
+            project.prepare_launch(config, state, emit, stop)
+        })?;
         status(
             emit,
             &format!("LAUNCH TASK {} / {}", launch.task, launch.main_class),
@@ -118,7 +141,9 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
     // Build tasks may delete any output, even before reporting failure. The JVM
     // must never load from those paths, including lazy classes/resources/JARs.
     // Declared before `app`: its files are cleaned only after Managed stops Java.
-    let runtime = RuntimeSnapshot::create(state, cp, &roots, stop)?;
+    let runtime = timed(emit, "runtime_copy", || {
+        RuntimeSnapshot::create(state, cp, &roots, stop)
+    })?;
     status(
         emit,
         "RUNTIME SNAPSHOT ready (build outputs isolated from JVM)",
@@ -197,6 +222,7 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
         &format!("RUNNING pid={} (save a Java source to compile)", app.0.id()),
     );
     let mut dirty_since = None;
+    let mut pending = BTreeSet::new();
     let mut generation = 0u64;
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -209,6 +235,7 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
             }
             break;
         }
+        let scan_start = Instant::now();
         let next = match snapshot(&sources) {
             Ok(next) => next,
             Err(error) => {
@@ -221,22 +248,34 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
             }
         };
         if next != seen {
+            pending.extend(
+                next.keys()
+                    .chain(seen.keys())
+                    .filter(|path| next.get(*path) != seen.get(*path))
+                    .cloned(),
+            );
             seen = next;
             dirty_since = Some(Instant::now());
         }
         if dirty_since
             .is_some_and(|t| t.elapsed() >= Duration::from_millis(config.debounce_ms.max(50)))
         {
-            dirty_since = None;
-            status(emit, "COMPILING");
-            match project.compile(config, emit, stop) {
+            let debounce = dirty_since.take().unwrap().elapsed().as_millis();
+            status(emit, &format!("COMPILING changed_files={} source_files={} source_scan_ms={} debounce_ms={debounce}", pending.len(), seen.len(), scan_start.elapsed().as_millis()));
+            pending.clear();
+            let cycle = Instant::now();
+            match project.compile_for_classpath(config, Some(cp), emit, stop) {
                 Ok(()) => {
                     generation += 1;
+                    let publish_start = Instant::now();
                     match publish_snapshot(&project, state, generation) {
-                        Ok(()) => status(emit, "COMPILED (reload requested)"),
+                        Ok(stats) => {
+                            status(emit, &format!("TIMING reload_publish elapsed_ms={} classes={} bytes={} generation={generation}", publish_start.elapsed().as_millis(), stats.classes, stats.bytes));
+                            status(emit, "COMPILED (reload requested)");
+                        }
                         Err(error) => status(
                             emit,
-                            &format!("RELOAD FAILED: {error}; application keeps running"),
+                            &format!("RELOAD FAILED: {error}; application keeps running (publish_elapsed_ms={})", publish_start.elapsed().as_millis()),
                         ),
                     }
                 }
@@ -246,6 +285,13 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
                     &format!("COMPILE FAILED: {e}; application keeps running"),
                 ),
             }
+            status(
+                emit,
+                &format!(
+                    "TIMING compile_to_commit elapsed_ms={} (excludes agent reload)",
+                    cycle.elapsed().as_millis()
+                ),
+            );
             // `seen` remains the pre-build snapshot: edits during a build trigger a subsequent job.
         }
         thread::sleep(Duration::from_millis(100));
@@ -253,7 +299,12 @@ fn run_inner(config: &Config, state: &Path, stop: &AtomicBool, emit: &Emit) -> R
     Ok(())
 }
 
-fn copy_classes(source: &Path, destination: &Path) -> Result<(), String> {
+#[derive(Default)]
+struct CopyStats {
+    classes: u64,
+    bytes: u64,
+}
+fn copy_classes(source: &Path, destination: &Path, stats: &mut CopyStats) -> Result<(), String> {
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
     if !source.exists() {
         return Ok(());
@@ -266,18 +317,20 @@ fn copy_classes(source: &Path, destination: &Path) -> Result<(), String> {
         }
         let target = destination.join(entry.file_name());
         if kind.is_dir() {
-            copy_classes(&entry.path(), &target)?;
+            copy_classes(&entry.path(), &target, stats)?;
         } else if entry.path().extension().is_some_and(|e| e == "class") {
-            fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+            stats.bytes += fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
+            stats.classes += 1;
         }
     }
     Ok(())
 }
 
-fn publish_snapshot(project: &Project, state: &Path, generation: u64) -> Result<(), String> {
+fn publish_snapshot(project: &Project, state: &Path, generation: u64) -> Result<CopyStats, String> {
     let snapshot_dir = state.join("reloads").join(generation.to_string());
+    let mut stats = CopyStats::default();
     for (index, root) in project.modules.iter().flat_map(|m| &m.classes).enumerate() {
-        copy_classes(root, &snapshot_dir.join(index.to_string()))?;
+        copy_classes(root, &snapshot_dir.join(index.to_string()), &mut stats)?;
     }
     fs::write(
         state.join("commit.next"),
@@ -306,5 +359,5 @@ fn publish_snapshot(project: &Project, state: &Path, generation: u64) -> Result<
             }
         }
     }
-    Ok(())
+    Ok(stats)
 }

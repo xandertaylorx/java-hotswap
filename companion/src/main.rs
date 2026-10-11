@@ -33,6 +33,8 @@ pub struct Config {
     pub args: Vec<String>,
     pub classpath: Vec<PathBuf>,
     pub build_args: Vec<String>,
+    /// Include Gradle's incremental decisions and compiler analysis in build output.
+    pub build_diagnostics: bool,
     pub debounce_ms: u64,
     pub jdwp_port: Option<u16>,
 }
@@ -51,6 +53,7 @@ impl Default for Config {
             args: vec![],
             classpath: vec![],
             build_args: vec![],
+            build_diagnostics: false,
             debounce_ms: 250,
             jdwp_port: None,
         }

@@ -360,6 +360,108 @@ class HotSwap(unittest.TestCase):
             finally: session.close()
             self.assertFalse(runtime.exists())
 
+    def test_gradle_timing_and_configuration_cache(self):
+        with tempfile.TemporaryDirectory(prefix='hotswap incremental ') as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build', '.gradle', '.java-hotswap'))
+            # A method edit must not recompile hundreds of independent classes.
+            for index in range(256):
+                (root / f'src/main/java/demo/Cold{index}.java').write_text(
+                    f'package demo; public class Cold{index} {{ public static int value() {{ return {index}; }} }}')
+            (root / 'gradle.properties').write_text('org.gradle.configuration-cache=true\n')
+            (root / '.java-hotswap.json').write_text(json.dumps({'buildDiagnostics':True}))
+            session = Session(root)
+            try:
+                pid = re.search(r'pid=(\d+)', session.wait(r'radius=0 pid='))[1]
+                source = root / 'src/main/java/demo/Main.java'
+                text = source.read_text()
+                cold = root / 'build/classes/java/main/demo/Cold0.class'
+                cold_time = cold.stat().st_mtime_ns
+                for radius in (10, 20):
+                    offset = len(session.lines)
+                    source.write_text(text.replace('return 0;', f'return {radius};'))
+                    session.wait(rf'radius={radius} pid={pid}\b', offset)
+                    session.wait('TIMING agent_reload', offset)
+                    output = ''.join(session.lines[offset:])
+                    self.assertIn('Reusing configuration cache.', output)
+                    self.assertRegex(output, r'GRADLE TASK :compileJava elapsed_ms=\d+ outcome=EXECUTED')
+                    self.assertRegex(output, r'Incremental compilation of 1 classes')
+                    self.assertRegex(output, r'COMPILING changed_files=1 source_files=257 source_scan_ms=\d+')
+                    self.assertRegex(output, r'TIMING build tool=gradle elapsed_ms=\d+ result=success')
+                    self.assertRegex(output, r'TIMING reload_publish elapsed_ms=\d+ classes=\d+ bytes=\d+')
+                    self.assertNotIn('Full recompilation is required', output)
+                    self.assertEqual(cold.stat().st_mtime_ns, cold_time)
+                offset = len(session.lines)
+                source.write_text(text.replace('return 0;', 'return syntax error;'))
+                session.wait('COMPILE FAILED', offset)
+                session.wait(rf'radius=20 pid={pid}\b', len(session.lines))
+                output = ''.join(session.lines[offset:])
+                self.assertRegex(output, r'GRADLE TASK :compileJava elapsed_ms=\d+ outcome=FAILED')
+                self.assertRegex(output, r'TIMING build tool=gradle elapsed_ms=\d+ result=failed')
+            finally: session.close()
+
+    def test_gradle_explicit_nonincremental_setting_is_preserved(self):
+        with tempfile.TemporaryDirectory(prefix='hotswap compiler policy ') as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/gradle', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build', '.gradle', '.java-hotswap'))
+            build = root / 'build.gradle'
+            build.write_text(build.read_text()+"\ntasks.named('compileJava') { options.incremental = false }\n")
+            (root / 'src/main/java/demo/Other.java').write_text('package demo; public class Other {}')
+            (root / '.java-hotswap.json').write_text(json.dumps({'buildDiagnostics':True}))
+            session = Session(root)
+            try:
+                pid = re.search(r'pid=(\d+)', session.wait(r'radius=0 pid='))[1]
+                session.wait('GRADLE COMPILER :compileJava incremental=false')
+                metadata = json.loads((root / '.java-hotswap/gradle.json').read_text())
+                self.assertFalse(metadata[0]['javaCompile']['incremental'])
+                other = root / 'build/classes/java/main/demo/Other.class'
+                before = other.stat().st_mtime_ns
+                source = root / 'src/main/java/demo/Main.java'
+                offset = len(session.lines)
+                source.write_text(source.read_text().replace('return 0;', 'return 10;'))
+                session.wait(rf'radius=10 pid={pid}\b', offset)
+                self.assertGreater(other.stat().st_mtime_ns, before)
+                self.assertNotIn('Incremental compilation of', ''.join(session.lines[offset:]))
+                self.assertEqual(build.read_text().count('options.incremental = false'), 1)
+            finally: session.close()
+
+    def test_gradle_runtime_scope_and_abi_dependents(self):
+        with tempfile.TemporaryDirectory(prefix='hotswap scope ') as tmp:
+            root = Path(tmp)
+            shutil.copytree(REPO / 'examples/gradle-multi', root, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('build', '.gradle', '.java-hotswap'))
+            settings = root / 'settings.gradle'
+            settings.write_text(settings.read_text()+"\ninclude 'unrelated'\n")
+            unused = root / 'unrelated/src/main/java/Broken.java'
+            unused.parent.mkdir(parents=True)
+            unused.write_text('public class Broken { syntax error }')
+            session = Session(root)
+            try:
+                pid = re.search(r'pid=(\d+)', session.wait(r'radius=0 pid='))[1]
+                self.assertFalse((root / 'unrelated/build').exists())
+                core = root / 'core/src/main/java/demo/Radius.java'
+                text = core.read_text()
+                offset = len(session.lines)
+                core.write_text(text.replace('return 0;', 'return 10;'))
+                session.wait(rf'radius=10 pid={pid}\b', offset)
+                session.wait('GRADLE TASK SUMMARY', offset)
+                output = ''.join(session.lines[offset:])
+                self.assertIn('GRADLE REQUEST :app:classes :core:classes', output)
+                self.assertRegex(output, r'GRADLE TASK :app:compileJava elapsed_ms=\d+ outcome=UP-TO-DATE')
+                app_class = root / 'app/build/classes/java/main/demo/Main.class'
+                old_bytes = app_class.read_bytes()
+                offset = len(session.lines)
+                core.write_text(text.replace('static int explosionRadius()', 'static long explosionRadius()'))
+                session.wait('UNSUPPORTED batch', offset)
+                session.wait(rf'radius=10 pid={pid}\b', len(session.lines))
+                self.assertRegex(''.join(session.lines[offset:]), r'GRADLE TASK :app:compileJava elapsed_ms=\d+ outcome=EXECUTED')
+                self.assertNotEqual(app_class.read_bytes(), old_bytes)
+                self.assertFalse((root / 'unrelated/build').exists())
+                self.assertNotIn('Task :unrelated:compileJava', ''.join(session.lines))
+            finally: session.close()
+
     def test_snapshot_failure_recovery(self):
         with tempfile.TemporaryDirectory(prefix='hotswap failure ') as tmp:
             root = Path(tmp)

@@ -21,11 +21,14 @@ gradle.projectsEvaluated {
                 def app = p.extensions.findByName('application')
                 def run = app == null ? null : p.tasks.named('run').get()
                 def launcher = p.extensions.findByName('java').toolchain
+                def compiler = p.tasks.findByName(main.compileJavaTaskName)
                 def javaExecutable = (run == null ? p.javaToolchains.launcherFor(launcher).get() : run.javaLauncher.get()).executablePath.asFile.absolutePath
                 [name: p.path, sources: main.java.srcDirs.collect { it.absolutePath },
                  classes: main.output.classesDirs.files.collect { it.absolutePath },
                  classpath: mappedClasspath(main.runtimeClasspath.files.collect { it.absolutePath }),
                  compileTasks: [p.tasks.getByName(main.classesTaskName).path],
+                 javaCompile: compiler instanceof org.gradle.api.tasks.compile.JavaCompile ?
+                    [task: compiler.path, incremental: compiler.options.incremental, fork: compiler.options.fork] : null,
                  mainClass: app == null ? null : app.mainClass.orNull,
                  // Launch values can contain credentials: keep them exclusively
                  // in the private, ephemeral capture file, never discovery metadata.

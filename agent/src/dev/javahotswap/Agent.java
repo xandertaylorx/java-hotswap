@@ -19,7 +19,9 @@ public final class Agent {
         commit = Path.of(lines.get(0));
         roots = new ArrayList<>();
         for (String line : lines.subList(1, lines.size())) roots.add(Path.of(line).toAbsolutePath().normalize());
+        long started = System.nanoTime();
         previous = hashes(roots);
+        log("TIMING agent_baseline classes=" + previous.size() + " elapsed_ms=" + millis(started));
     }
     public static void premain(String config, Instrumentation instrumentation) {
         try {
@@ -65,11 +67,14 @@ public final class Agent {
         return result;
     }
     private void reload(Path snapshot) throws Exception {
+        long started = System.nanoTime();
         List<Path> inputs = new ArrayList<>();
         for (int i = 0; i < roots.size(); i++) inputs.add(snapshot.resolve(Integer.toString(i)));
         Map<Path, byte[]> current = hashes(inputs);
+        long hashMillis = millis(started);
         List<ClassDefinition> definitions = new ArrayList<>();
-        for (Class<?> type : instrumentation.getAllLoadedClasses()) {
+        Class<?>[] loaded = instrumentation.getAllLoadedClasses();
+        for (Class<?> type : loaded) {
             if (type.isArray() || type.isPrimitive() || type.getName().startsWith("dev.javahotswap.")) continue;
             Path origin;
             try {
@@ -85,14 +90,23 @@ public final class Agent {
             } else if (previous.containsKey(file) && !current.containsKey(file)) log("UNSUPPORTED deleted loaded class " + type.getName());
         }
         previous = current; // One diagnostic per successful build, including rejected structural changes.
-        if (definitions.isEmpty()) return;
+        long redefineStarted = System.nanoTime();
+        String outcome = "unchanged";
         try {
+            if (definitions.isEmpty()) return;
             instrumentation.redefineClasses(definitions.toArray(ClassDefinition[]::new));
+            outcome = "reloaded";
             for (ClassDefinition definition : definitions) log("RELOADED " + definition.getDefinitionClass().getName());
         } catch (UnsupportedOperationException | ClassNotFoundException | UnmodifiableClassException | LinkageError error) {
+            outcome = "rejected";
             log("UNSUPPORTED batch " + definitions.stream().map(d -> d.getDefinitionClass().getName()).toList()
                 + ": " + error + "; application continues with previous definitions; restart manually if needed");
+        } finally {
+            log("TIMING agent_reload generation=" + snapshot.getFileName() + " classes=" + current.size()
+                + " loaded=" + loaded.length + " definitions=" + definitions.size() + " hash_ms=" + hashMillis
+                + " redefine_ms=" + millis(redefineStarted) + " elapsed_ms=" + millis(started) + " result=" + outcome);
         }
     }
+    private static long millis(long started) { return (System.nanoTime() - started) / 1_000_000L; }
     private static void log(String message) { System.err.println("[Java HotSwap] " + message); }
 }

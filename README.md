@@ -165,6 +165,22 @@ The CLI equivalent is `java-hotswap run --project /path/to/workspace --project-r
 
 Discovery skips symlinks and generated/cache directories such as `.git`, `.gradle`, `.java-hotswap`, `build`, `build.nosync`, `target`, and `node_modules`. Use an explicit `projectRoot` for a build in an excluded directory. Plain Java compilation is used only when no build is found; an invalid explicit build selection produces an error.
 
+### Build timing and incremental compilation
+
+Every build reports task paths, durations and outcomes (`EXECUTED`, `UP-TO-DATE`, `FROM-CACHE`, `SKIPPED`, `FAILED`). HotSwap also reports changed/source file counts, source scan/debounce time, build wall time, reload snapshot bytes/classes, and agent hash/redefinition time. Discovery, launch preparation and runtime copying have separate startup timings. Maven/plain Java retain their normal compilers and receive build/reload phase timings.
+
+For Gradle’s detailed input-change reasons and incremental class counts, add this to your existing Zed launch scenario or `.java-hotswap.json`, then restart the session:
+
+```json
+"buildDiagnostics": true
+```
+
+This enables Gradle `--info` on compilation commands. Look for `Incremental compilation of ... classes`, `Full recompilation is required ...`, missing outputs, changed compiler arguments, annotation processing and task input changes. It is opt-in because normal Gradle verbose output can include project-configured values. Task timings do not print application arguments, environment or system properties.
+
+Rebuilds honour the project’s daemon, compiler/toolchain, incremental, build-cache and configuration-cache settings. HotSwap requests the selected application’s main classes tasks plus modules present in its resolved runtime classpath; Gradle follows their normal dependencies. Unrelated modules are not requested. Discovery and run-task capture still disable configuration caching because they inspect mutable Gradle models and launch preparation.
+
+Incremental does not mean “compile one file”: a change can affect a large dependency closure within one source set. HotSwap never limits javac to the edited file, overrides annotation processors, forces caching or removes preparation tasks. See the [measured performance investigation](docs/performance.md) for a large-project example and how to interpret the timings.
+
 ### Compilation failures and runtime isolation
 
 After the initial build and run-task preparation succeed, HotSwap copies the resolved launch classpath into `.java-hotswap/runtime`. This includes class directories, resources and dependency JARs; the JVM and agent use those private paths. Gradle/Maven continue compiling through their normal task graphs into their normal outputs, separate from the running JVM’s classpath. Even a task that deletes those outputs cannot remove the runtime’s files.
@@ -231,6 +247,7 @@ Create `.java-hotswap.json` in the workspace (`cwd`) only when needed:
 | `gradleVersion` | Verified stable version for custom/unversioned Gradle distributions or launchers; checked against actual wrapper output. |
 | `jvmArgs` | Additional JVM arguments, such as `-XstartOnFirstThread` for a macOS application that needs it. |
 | `args` | Application arguments; appended to inherited Gradle task arguments. |
+| `buildDiagnostics` | Opt-in Gradle `--info` compiler/rebuild reasons; phase and task timings are always enabled. |
 | `buildArgs` | Build-tool options, such as Maven profiles. |
 | `classpath` | Additional directories/JARs for plain Java. |
 | `debounceMs` | Save debounce interval; defaults to 250 ms. |

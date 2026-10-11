@@ -4,6 +4,18 @@ Local verification on 2026-10-10, macOS Apple Silicon. These are executed result
 
 Toolchains: Rust 1.97.1; zed_extension_api 0.7.0; Temurin Java 17.0.20.1, 21.0.10, 25.0.2; Gradle 9.1.0; Maven 3.9.11. The embedded agent's classfile major version is 61 (Java 17).
 
+## Compilation timing / incremental build investigation — 2026-10-11
+
+An isolated copy of the current Minecraft project was measured with Gradle 8.10 and Java 21. Original project files were not edited or built. The 6,637-source copy took 28.332 seconds to establish relocated build state, 0.620 seconds with no changes, and 24.906 seconds after one AbstractArrow method-body edit. Gradle reported incremental compilation of 8,426 classes in 23.022 seconds plus 1.101 seconds of dependency analysis; no forced full rebuild occurred on that edit. The exact reported 64 seconds was not reproduced. See [performance.md](performance.md) for methodology, limits and upstream references.
+
+Executed regression coverage with the rebuilt release:
+
+- Detailed task timings/outcomes remained present when Gradle reused configuration-cache entries. Method-body edits in a 257-source fixture compiled only one class, preserved untouched class timestamps and reloaded in the same JVM. Failed builds reported timings and kept that JVM running.
+- A multi-module fixture with an unrelated module containing invalid Java launched successfully without requesting that module. ABI-compatible upstream edits left app compilation up to date; an ABI-changing signature edit recompiled the app and was safely rejected by standard JVM HotSwap as an atomic batch.
+- Explicit incremental=false remained false in discovered compiler settings and caused an unrelated class to be recompiled, verifying that HotSwap did not override project policy.
+- Existing destructive-output failure isolation, JavaExec/run argument inheritance, project/JDK discovery, Maven, plain Java, multi-module and DAP tests remained part of the release suite.
+- Full release suite: 32 passed, one graphical test skipped (33 total). The graphical LWJGL lifecycle/reload test passed separately, giving 33 distinct passing integration cases. Fifteen Rust tests, formatting, clippy with warnings denied, native/WASM release builds passed. The installed local companion matches the tested release binary.
+
 ## Stable runtime classpath / destructive-build isolation — 2026-10-11
 
 Investigation found that successful reload generations were already immutable, but the application still launched from the original mutable build outputs. Read-only inspection of the Minecraft build showed `prepareSource` conditionally extracting sources, `applyChanges` running a script that edits Java sources, and `compileJava` depending on that preparation. No Minecraft build was run or modified for this investigation. Gradle 8.10's [incremental compile transaction](https://github.com/gradle/gradle/blob/v8.10.0/platforms/jvm/language-java/src/main/java/org/gradle/api/internal/tasks/compile/incremental/transaction/CompileTransaction.java) moves selected class/resource files out of compiler destinations before javac and may restore them after failure; even eventual rollback leaves an unsafe window for a JVM reading those paths.

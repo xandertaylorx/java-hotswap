@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::AtomicBool,
+    time::Instant,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -31,6 +32,14 @@ pub struct Module {
     pub java: Option<String>,
     #[serde(default)]
     pub run_tasks: Vec<RunTask>,
+    #[serde(default)]
+    pub java_compile: Option<JavaCompile>,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct JavaCompile {
+    pub task: String,
+    pub incremental: bool,
+    pub fork: bool,
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,10 +223,17 @@ impl Project {
                 include_str!("../gradle.init.gradle"),
             )
             .map_err(|e| e.to_string())?;
+            fs::write(
+                state.join("timing.gradle"),
+                include_str!("../gradle.timing.gradle"),
+            )
+            .map_err(|e| e.to_string())?;
             let mut command = project.command(config);
             command
                 .args(["--console=plain", "--no-configuration-cache", "-I"])
                 .arg(state.join("init.gradle"))
+                .arg("-I")
+                .arg(state.join("timing.gradle"))
                 .arg(format!(
                     "-DjavaHotSwap.metadata={}",
                     state.join("gradle.json").display()
@@ -228,6 +244,14 @@ impl Project {
                 &fs::read(state.join("gradle.json")).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
+            for module in &project.modules {
+                if let Some(compiler) = &module.java_compile {
+                    emit("stderr", &format!("[Java HotSwap] GRADLE COMPILER {} incremental={} fork={} (project settings preserved)\n", compiler.task, compiler.incremental, compiler.fork));
+                    if !compiler.incremental {
+                        emit("stderr", "[Java HotSwap] Gradle incremental compilation is disabled by this project; buildDiagnostics=true shows full rebuild reasons. HotSwap will not override compiler settings.\n");
+                    }
+                }
+            }
         } else if kind == "maven" {
             project.maven_modules(&root, state, config, emit, stop)?;
             // Dependency resolution is delegated to Maven; do not guess JAR names or scan ~/.m2.
@@ -288,6 +312,7 @@ impl Project {
                 jvm_args: vec![],
                 java: None,
                 run_tasks: vec![],
+                java_compile: None,
             });
         }
         if project.modules.is_empty() {
@@ -359,6 +384,7 @@ impl Project {
             jvm_args: vec![],
             java: None,
             run_tasks: vec![],
+            java_compile: None,
         });
         if let Some(modules) = child(p, "modules") {
             for module in modules.children().filter(|n| n.has_tag_name("module")) {
@@ -374,14 +400,80 @@ impl Project {
         Ok(())
     }
     pub fn compile(&self, config: &Config, emit: &Emit, stop: &AtomicBool) -> Result<(), String> {
+        self.compile_for_classpath(config, None, emit, stop)
+    }
+    pub fn compile_for_classpath(
+        &self,
+        config: &Config,
+        classpath: Option<&[PathBuf]>,
+        emit: &Emit,
+        stop: &AtomicBool,
+    ) -> Result<(), String> {
+        let start = Instant::now();
+        let result = self.compile_inner(config, classpath, emit, stop);
+        emit(
+            "stderr",
+            &format!(
+                "[Java HotSwap] TIMING build tool={} elapsed_ms={} result={}\n",
+                self.kind,
+                start.elapsed().as_millis(),
+                if result.is_ok() { "success" } else { "failed" }
+            ),
+        );
+        result
+    }
+    pub fn gradle_compile_tasks(
+        &self,
+        config: &Config,
+        classpath: Option<&[PathBuf]>,
+    ) -> Result<Vec<String>, String> {
+        let (_, selected) = self.run_task(config)?;
+        let mut tasks = selected.compile_tasks.clone();
+        {
+            let cp = classpath.unwrap_or(&selected.classpath);
+            // Request all project outputs in the captured runtime graph, and let
+            // Gradle follow declared task dependencies/ABI changes. Never select
+            // only the edited file or only its producer (would miss consumers).
+            for module in &self.modules {
+                if module.classes.iter().any(|root| {
+                    cp.iter().any(|p| {
+                        p == root
+                            || fs::canonicalize(p)
+                                .ok()
+                                .zip(fs::canonicalize(root).ok())
+                                .is_some_and(|(a, b)| a == b)
+                    })
+                }) {
+                    tasks.extend(module.compile_tasks.clone());
+                }
+            }
+        }
+        tasks.sort();
+        tasks.dedup();
+        Ok(tasks)
+    }
+    fn compile_inner(
+        &self,
+        config: &Config,
+        classpath: Option<&[PathBuf]>,
+        emit: &Emit,
+        stop: &AtomicBool,
+    ) -> Result<(), String> {
         let mut cmd;
         match self.kind.as_str() {
             "gradle" => {
                 cmd = self.command(config);
-                cmd.args(["--console=plain", "--no-configuration-cache"]);
-                for m in &self.modules {
-                    cmd.args(&m.compile_tasks);
+                cmd.args(["--console=plain", "-I"]).arg(
+                    fs::canonicalize(&config.cwd)
+                        .map_err(|e| e.to_string())?
+                        .join(".java-hotswap/timing.gradle"),
+                );
+                if config.build_diagnostics {
+                    cmd.arg("--info");
                 }
+                let tasks = self.gradle_compile_tasks(config, classpath)?;
+                emit("stderr", &format!("[Java HotSwap] GRADLE REQUEST {} (normal dependency graph; compiler options unchanged)\n", tasks.join(" ")));
+                cmd.args(tasks);
             }
             "maven" => {
                 cmd = self.command(config);
@@ -548,6 +640,8 @@ impl Project {
             command
                 .args(["--console=plain", "--no-configuration-cache", "-I"])
                 .arg(state.join("init.gradle"))
+                .arg("-I")
+                .arg(state.join("timing.gradle"))
                 .arg(format!("-DjavaHotSwap.runTask={}", task.name))
                 .arg(format!("-DjavaHotSwap.launch={}", path.display()))
                 .arg(&task.name);
@@ -627,6 +721,37 @@ pub fn snapshot(roots: &[PathBuf]) -> Result<BTreeMap<PathBuf, u64>, String> {
 mod discovery_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn compile_scope_keeps_runtime_consumers_and_excludes_unrelated_modules() {
+        let modules = serde_json::from_value(serde_json::json!([
+            {"name":":app", "sources":[], "classes":["/hotswap-test-app"],
+             "classpath":["/hotswap-test-app", "/hotswap-test-core"], "compileTasks":[":app:classes"],
+             "runTasks":[{"name":":app:run", "mainClass":"demo.Main"}]},
+            {"name":":core", "sources":[], "classes":["/hotswap-test-core"], "classpath":[], "compileTasks":[":core:classes"]},
+            {"name":":unused", "sources":[], "classes":["/hotswap-test-unused"], "classpath":[], "compileTasks":[":unused:classes"]}
+        ])).unwrap();
+        let project = Project {
+            root: ".".into(),
+            kind: "gradle".into(),
+            modules,
+            tool: "gradle".into(),
+            gradle_runtime: None,
+        };
+        assert_eq!(
+            project
+                .gradle_compile_tasks(&Config::default(), None)
+                .unwrap(),
+            [":app:classes", ":core:classes"]
+        );
+        let captured = vec!["/hotswap-test-app".into(), "/hotswap-test-unused".into()];
+        assert_eq!(
+            project
+                .gradle_compile_tasks(&Config::default(), Some(&captured))
+                .unwrap(),
+            [":app:classes", ":unused:classes"]
+        );
+    }
 
     #[test]
     fn gradle_run_task_selection_does_not_guess_from_source_main() {
